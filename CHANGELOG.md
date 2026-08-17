@@ -37,5 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version is now derived from git tags via `hatch-vcs` instead of being
   hardcoded in `pyproject.toml` and `__init__.py`.
 - `pyproject.toml` gained release metadata (license, authors, classifiers, URLs).
+- LinkML floor is `>=1.11.1` (the current latest). 1.9.5 mapped `range: decimal`
+  to `Column(Integer())` in `gen-sqla` — silent data loss; 1.11.x emits
+  `Column(Numeric())`. Two further behaviour changes come with it: `gen-pydantic`
+  now defaults optional multivalued slots to `None` rather than `[]` (and no
+  longer emits the `treat_empty_lists_as_none` model serializer), and generated
+  modules carry a real `metamodel_version` instead of `"None"`.
 
 [Unreleased]: https://github.com/PNNL/dizzy/compare/HEAD
