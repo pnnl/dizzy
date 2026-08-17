@@ -29,7 +29,7 @@ from pydantic import (
 )
 
 
-metamodel_version = "None"
+metamodel_version = "1.11.0"
 version = "None"
 
 
@@ -45,19 +45,7 @@ class ConfiguredBaseModel(BaseModel):
         strict = False,
     )
 
-    @model_serializer(mode='wrap', when_used='unless-none')
-    def treat_empty_lists_as_none(
-            self, handler: SerializerFunctionWrapHandler,
-            info: SerializationInfo) -> dict[str, Any]:
-        if info.exclude_none:
-            _instance = self.model_copy()
-            for field, field_info in type(_instance).model_fields.items():
-                if getattr(_instance, field) == [] and not(
-                        field_info.is_required()):
-                    setattr(_instance, field, None)
-        else:
-            _instance = self
-        return handler(_instance, info)
+
 
 
 
@@ -111,6 +99,28 @@ class LanguageRuntime(str, Enum):
     """
 
 
+class ContractKind(str, Enum):
+    """
+    Contract families that can be emitted as JSON Schema
+    """
+    commands = "commands"
+    """
+    def/commands.yaml — the write intentions
+    """
+    events = "events"
+    """
+    def/events.yaml — the recorded facts
+    """
+    queries = "queries"
+    """
+    def/queries/*.yaml — the read surface (input + output shapes)
+    """
+    models = "models"
+    """
+    def/models/*.yaml — the projected read models
+    """
+
+
 
 class LibConfig(ConfiguredBaseModel):
     """
@@ -118,10 +128,21 @@ class LibConfig(ConfiguredBaseModel):
     """
     linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://example.org/dizzy/libconfig'})
 
-    procedures: Optional[list[ElementBinding]] = Field(default=[], description="""Procedure bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
-    policies: Optional[list[ElementBinding]] = Field(default=[], description="""Policy bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
-    queries: Optional[list[ElementBinding]] = Field(default=[], description="""Query bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
-    projections: Optional[list[ElementBinding]] = Field(default=[], description="""Projection bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
+    procedures: Optional[list[ElementBinding]] = Field(default=None, description="""Procedure bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
+    policies: Optional[list[ElementBinding]] = Field(default=None, description="""Policy bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
+    queries: Optional[list[ElementBinding]] = Field(default=None, description="""Query bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
+    projections: Optional[list[ElementBinding]] = Field(default=None, description="""Projection bindings to language runtimes""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
+    json_schema: Optional[JsonSchemaConfig] = Field(default=None, description="""Runtime-neutral JSON Schema emission. Omit the section entirely to emit nothing — that is the backwards-compatible default for libconfig.yaml files written before this section existed.""", json_schema_extra = { "linkml_meta": {'domain_of': ['LibConfig']} })
+
+
+class JsonSchemaConfig(ConfiguredBaseModel):
+    """
+    Controls the JSON Schema contracts emitted by `dizzy generate static`.
+    """
+    linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://example.org/dizzy/libconfig'})
+
+    contracts: Optional[list[ContractKind]] = Field(default=None, description="""Which contract kinds get a JSON Schema. Defaults to [commands, queries] when the json_schema section is present but the key is omitted.""", json_schema_extra = { "linkml_meta": {'domain_of': ['JsonSchemaConfig']} })
+    output_dir: Optional[str] = Field(default=None, description="""Directory for the emitted schemas, relative to the generate output directory. Defaults to `gen_schema`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['JsonSchemaConfig']} })
 
 
 class ElementBinding(ConfiguredBaseModel):
@@ -131,10 +152,11 @@ class ElementBinding(ConfiguredBaseModel):
     linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://example.org/dizzy/libconfig'})
 
     name: str = Field(default=..., description="""Element name matching a name in the corresponding feat section""", json_schema_extra = { "linkml_meta": {'domain_of': ['ElementBinding']} })
-    runtimes: Optional[list[LanguageRuntime]] = Field(default=[], description="""Language runtimes that implement this element""", json_schema_extra = { "linkml_meta": {'domain_of': ['ElementBinding']} })
+    runtimes: Optional[list[LanguageRuntime]] = Field(default=None, description="""Language runtimes that implement this element""", json_schema_extra = { "linkml_meta": {'domain_of': ['ElementBinding']} })
 
 
 # Model rebuild
 # see https://pydantic-docs.helpmanual.io/usage/models/#rebuilding-a-model
 LibConfig.model_rebuild()
+JsonSchemaConfig.model_rebuild()
 ElementBinding.model_rebuild()

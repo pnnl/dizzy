@@ -9,6 +9,8 @@ frameworks, or infrastructure.
 The generator pipeline reads a `.feat.yaml` and produces:
 - LinkML schema files (`def/`) for each section
 - Generated Python models and interfaces (`gen_def/`, `gen_int/`)
+- Runtime-neutral JSON Schema contracts (`gen_schema/`), when `libconfig.yaml` asks for
+  them — see [JSON Schema contracts](#json-schema-contracts)
 
 ---
 
@@ -580,6 +582,55 @@ gen_int: generated interfaces
 tree is a valid Python package and root-relative imports resolve correctly.
 
 Sections with no content in the feat file produce no output.
+
+---
+
+## JSON Schema contracts
+
+`dizzy generate static` compiles `def/` sources to JSON Schema via LinkML's
+`gen-json-schema`, driven by the `json_schema` section of `libconfig.yaml`:
+
+```yaml
+json_schema:
+  contracts: [commands, queries]   # any of: commands | events | queries | models
+  output_dir: gen_schema           # relative to <output_dir>; default `gen_schema`
+```
+
+- **Absent section → nothing is emitted.** A `libconfig.yaml` written before the section
+  existed produces byte-identical output, so this is a purely additive change.
+- **`json_schema: {}` → opts in with the defaults** above: `contracts: [commands, queries]`,
+  `output_dir: gen_schema`. Commands and queries are the outward-facing contracts — the
+  shapes an HTTP edge or a UI actually posts and receives.
+- `generate definitions` writes the section into *new* libconfig stubs. It never
+  overwrites an existing `libconfig.yaml`.
+
+One document is emitted per `def/` source, mirroring the `def/` layout:
+
+```
+gen_schema/
+  commands.schema.json          # from def/commands.yaml
+  events.schema.json            # from def/events.yaml
+  queries/<name>.schema.json    # from def/queries/<name>.yaml
+  models/<name>.schema.json     # from def/models/<name>.yaml
+```
+
+Every class in a source lands under `$defs` in the emitted document, keyed by its
+LinkML-normalised (PascalCase) class name. Validate a single payload by pointing a
+validator at a `$ref` into `$defs`:
+
+```python
+import json
+from jsonschema import Draft201909Validator
+
+doc = json.loads(open("gen_schema/queries/get_projects.schema.json").read())
+validator = Draft201909Validator({**doc, "$ref": "#/$defs/GetProjectsOutput"})
+validator.validate(api_response)
+```
+
+`gen_schema/` is a sibling of `def/` and `lib/`, not a child of `lib/python-uv/`: JSON
+Schema is consumed by every runtime, and by consumers that are not a runtime at all
+(HTTP edges, docs sites, contract tests), so filing it inside one language tree would
+misplace it.
 
 ---
 

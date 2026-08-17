@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from dizzy.feat_schema import FeatureDefinition
+from dizzy.generators.json_schema import DEFAULT_CONTRACTS
 from dizzy.logger import logger
 
 
@@ -25,6 +26,14 @@ def render_libconfig_stub(feat: FeatureDefinition, default_runtime: str = "pytho
                 lines.append(f"  {item.name}:")
                 lines.append(f"    runtimes: [{default_runtime}]")
             lines.append("")
+    lines += [
+        "# Runtime-neutral JSON Schema contracts, emitted by `dizzy generate static`",
+        "# into <output_dir>/gen_schema/. Contract kinds: commands | events | queries |",
+        "# models. Delete the section to stop emitting them.",
+        "json_schema:",
+        f"  contracts: [{', '.join(DEFAULT_CONTRACTS)}]",
+        "",
+    ]
     return "\n".join(lines)
 
 

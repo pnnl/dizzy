@@ -33,3 +33,18 @@ def gen_int_pkg_dir(output_dir: Path) -> Path:
 def gen_int_root(output_dir: Path) -> Path:
     """Importable ``gen_int`` package root (``.../gen_int/gen_int``)."""
     return gen_int_pkg_dir(output_dir) / "gen_int"
+
+
+DEFAULT_JSON_SCHEMA_DIR = "gen_schema"
+
+
+def gen_schema_root(output_dir: Path, subdir: str = DEFAULT_JSON_SCHEMA_DIR) -> Path:
+    """Root for runtime-neutral generated contracts (JSON Schema).
+
+    Deliberately a sibling of ``def/`` and ``lib/`` rather than a child of
+    ``lib/python-uv/``: JSON Schema is consumed by every runtime — and by things that
+    are not a runtime at all, like an HTTP edge or a docs site — so parking it inside
+    one language tree would misfile it. The ``gen_`` prefix keeps it recognisable as
+    generated, alongside ``gen_def`` / ``gen_int``.
+    """
+    return output_dir / subdir

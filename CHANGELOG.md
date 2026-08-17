@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `just lint`, `just fmt`, `just fmt-check`, `just ci`, and `just build`
   recipes.
 
+- **JSON Schema contracts** — `dizzy generate static` now emits runtime-neutral JSON
+  Schema into `gen_schema/`, one document per `def/` source, via LinkML's
+  `gen-json-schema`. Driven by a new optional `json_schema` section in
+  `libconfig.yaml` (`contracts:` any of `commands | events | queries | models`,
+  `output_dir:` defaulting to `gen_schema`). Omitting the section emits nothing, so
+  existing `libconfig.yaml` files produce byte-identical output; `generate definitions`
+  writes the section into new stubs with `[commands, queries]`.
+
 ### Changed
 - Package version is now derived from git tags via `hatch-vcs` instead of being
   hardcoded in `pyproject.toml` and `__init__.py`.
@@ -43,5 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now defaults optional multivalued slots to `None` rather than `[]` (and no
   longer emits the `treat_empty_lists_as_none` model serializer), and generated
   modules carry a real `metamodel_version` instead of `"None"`.
+- `load_libconfig` now materialises absent element sections as `[]` rather than relying
+  on LinkML's pydantic default, which changed to `None` in 1.11.
 
 [Unreleased]: https://github.com/PNNL/dizzy/compare/HEAD
