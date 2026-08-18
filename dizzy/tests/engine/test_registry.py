@@ -20,17 +20,21 @@ from dizzy.engine.registry import (
 
 # ── The convention, both directions ─────────────────────────────────────────
 
-@pytest.mark.parametrize("snake,camel", [
-    ("classify_image", "ClassifyImage"),
-    ("sync_bluesky_bookmarks", "SyncBlueskyBookmarks"),
-    ("record_recipe", "RecordRecipe"),
-    ("llm", "Llm"),
-    ("nutritiondb", "Nutritiondb"),
-    ("parse_html5", "ParseHtml5"),
-    ("record_ab_test", "RecordAbTest"),
-    ("x_y_z", "XYZ"),
-    ("2fa_check", "2faCheck"),
-])
+
+@pytest.mark.parametrize(
+    "snake,camel",
+    [
+        ("classify_image", "ClassifyImage"),
+        ("sync_bluesky_bookmarks", "SyncBlueskyBookmarks"),
+        ("record_recipe", "RecordRecipe"),
+        ("llm", "Llm"),
+        ("nutritiondb", "Nutritiondb"),
+        ("parse_html5", "ParseHtml5"),
+        ("record_ab_test", "RecordAbTest"),
+        ("x_y_z", "XYZ"),
+        ("2fa_check", "2faCheck"),
+    ],
+)
 def test_names_round_trip(snake, camel):
     """LinkML's camelcase produced the classes, so this must match it — not
     merely resemble it. Acronyms and digits are the cases that break naive
@@ -41,20 +45,27 @@ def test_names_round_trip(snake, camel):
 
 def test_the_recipe_fixture_round_trips_end_to_end(recipe_feat):
     """Every name DIZZY's own example declares survives the convention."""
-    for section in ("commands", "events", "procedures", "policies",
-                    "projections", "queries", "models"):
+    for section in (
+        "commands",
+        "events",
+        "procedures",
+        "policies",
+        "projections",
+        "queries",
+        "models",
+    ):
         for item in getattr(recipe_feat, section, None) or []:
             assert snake_case(camel_case(item.name)) == item.name, item.name
 
 
 # ── Resolution ──────────────────────────────────────────────────────────────
 
+
 def test_declared_names_resolve_to_generated_classes(write_feat, def_package):
-    pkg = def_package(commands=["RecordRecipe", "RateRecipe"],
-                      events=["RecipeRecorded"])
+    pkg = def_package(commands=["RecordRecipe", "RateRecipe"], events=["RecipeRecorded"])
     feat = write_feat(
-        "commands:\n  record_recipe: a\n  rate_recipe: b\n"
-        "events:\n  recipe_recorded: c\n")
+        "commands:\n  record_recipe: a\n  rate_recipe: b\nevents:\n  recipe_recorded: c\n"
+    )
     g = FeatGraph.load(feat, def_package=pkg)
     assert set(g.commands) == {"record_recipe", "rate_recipe"}
     assert g.commands["record_recipe"].__name__ == "RecordRecipe"
@@ -74,8 +85,7 @@ def test_a_declared_but_ungenerated_name_fails_loudly(write_feat, def_package):
 
 def test_an_undeclared_command_lookup_names_the_feat(write_feat, def_package):
     pkg = def_package(commands=["RecordRecipe"])
-    g = FeatGraph.load(write_feat("commands:\n  record_recipe: a\n"),
-                       def_package=pkg)
+    g = FeatGraph.load(write_feat("commands:\n  record_recipe: a\n"), def_package=pkg)
     with pytest.raises(KeyError, match="not declared"):
         g.command_class("no_such_command")
 
@@ -88,7 +98,8 @@ def test_resolution_is_lazy_per_section(write_feat, def_package):
     pkg = def_package(commands=["RecordRecipe"], events=["RecipeRecorded"])
     g = FeatGraph.load(
         write_feat("commands:\n  record_recipe: a\nevents:\n  recipe_recorded: b\n"),
-        def_package=pkg)
+        def_package=pkg,
+    )
     _ = g.commands
     assert f"{pkg}.commands" in sys.modules
     assert f"{pkg}.events" not in sys.modules
@@ -98,19 +109,22 @@ def test_resolution_is_lazy_per_section(write_feat, def_package):
 
 # ── Names that need no import at all ────────────────────────────────────────
 
+
 def test_environment_and_telemetry_are_just_names(write_feat):
-    g = FeatGraph.load(write_feat(
-        "environment:\n  llm: a\n  cas: b\ntelemetry:\n  usage: c\n"))
+    g = FeatGraph.load(write_feat("environment:\n  llm: a\n  cas: b\ntelemetry:\n  usage: c\n"))
     assert g.environment == ("llm", "cas")
     assert g.telemetry == ("usage",)
 
 
 def test_entry_normalizes_the_three_ways_a_feat_spells_a_declaration(write_feat):
-    g = FeatGraph.load(write_feat(
-        "commands:\n"
-        "  described: just a description\n"
-        "  mapped:\n    description: d\n    extra: e\n"
-        "  drafted:\n"))
+    g = FeatGraph.load(
+        write_feat(
+            "commands:\n"
+            "  described: just a description\n"
+            "  mapped:\n    description: d\n    extra: e\n"
+            "  drafted:\n"
+        )
+    )
     assert g.entry("commands", "described") == {"description": "just a description"}
     assert g.entry("commands", "mapped") == {"description": "d", "extra": "e"}
     # A null value is a declared-but-unwritten entry: present, just empty.
@@ -121,10 +135,18 @@ def test_entry_normalizes_the_three_ways_a_feat_spells_a_declaration(write_feat)
 
 # ── Guards: every one of these is typo-shaped ───────────────────────────────
 
-@pytest.mark.parametrize("bad", [
-    "record-recipe", "recordRecipe", "record__recipe", "_record_recipe",
-    "record recipe", "record.recipe",
-])
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "record-recipe",
+        "recordRecipe",
+        "record__recipe",
+        "_record_recipe",
+        "record recipe",
+        "record.recipe",
+    ],
+)
 def test_a_name_that_would_alias_onto_another_class_is_refused(write_feat, bad):
     """camel_case splits on any non-word run, so all of these collapse onto
     RecordRecipe — the same class as `record_recipe`. Unchecked, a typo'd
@@ -164,6 +186,7 @@ def test_an_empty_feat_is_legal(write_feat):
 
 # ── Validation ──────────────────────────────────────────────────────────────
 
+
 def test_validate_registered_reports_both_directions(write_feat):
     g = FeatGraph.load(write_feat("policies:\n  on_recorded: a\n  on_rated: b\n"))
     g.validate_registered({"policies": {"on_recorded", "on_rated"}})
@@ -181,10 +204,11 @@ def test_an_unknown_section_is_an_error_not_an_empty_answer(write_feat):
     with pytest.raises(KeyError, match="not a feat section"):
         g.names("widgets")
     with pytest.raises(KeyError, match="not a feat section"):
-        g.validate_registered({"policy": set()})      # a singular typo
+        g.validate_registered({"policy": set()})  # a singular typo
 
 
 # ── Discovery: a worker boots knowing only where it is ──────────────────────
+
 
 def test_find_feat_prefers_the_env_var(monkeypatch, write_feat, tmp_path):
     feat = write_feat("commands: {}\n")

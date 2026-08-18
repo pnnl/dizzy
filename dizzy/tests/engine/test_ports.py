@@ -30,6 +30,7 @@ def app_graph(write_feat) -> FeatGraph:
 
 # ── A minimal app supplies two things ──────────────────────────────────────
 
+
 def test_the_defaults_are_all_inert(app_graph):
     app = HostApp(graph=app_graph, build_runtime=lambda s: Runtime(engine=None))
     assert app.routes() == {}
@@ -57,16 +58,19 @@ def test_null_app_builds_from_a_feat_path(write_feat, monkeypatch):
     monkeypatch.setenv("DIZZY_FEAT_PATH", str(feat))
     app = null_app(lambda s: Runtime(engine="e"))
     assert app.graph.feat_path == feat
-    assert app.build_runtime(ShellServices(command_queue=None,
-                                           publish=lambda r: None)).engine == "e"
+    assert (
+        app.build_runtime(ShellServices(command_queue=None, publish=lambda r: None)).engine == "e"
+    )
 
 
 # ── The obligation that runs the other way ─────────────────────────────────
 
+
 def test_chain_observers_calls_every_observer_in_order():
     seen: list[str] = []
-    observer = chain_observers(lambda n, e: seen.append(f"first:{n}"),
-                               lambda n, e: seen.append(f"second:{n}"))
+    observer = chain_observers(
+        lambda n, e: seen.append(f"first:{n}"), lambda n, e: seen.append(f"second:{n}")
+    )
     observer("recipe_recorded", object())
     assert seen == ["first:recipe_recorded", "second:recipe_recorded"]
 
@@ -76,12 +80,15 @@ def test_shell_services_carry_an_observer_the_app_must_chain():
     an app that installs its own without chaining unplugs the shell."""
     collected: list[tuple[str, object]] = []
     published: list[dict] = []
-    services = ShellServices(command_queue=object(), publish=published.append,
-                             pool="ml", observer=lambda n, e: collected.append((n, e)))
+    services = ShellServices(
+        command_queue=object(),
+        publish=published.append,
+        pool="ml",
+        observer=lambda n, e: collected.append((n, e)),
+    )
 
     # What a well-behaved build_runtime does with it.
-    app_observer = chain_observers(services.observer,
-                                   lambda n, e: services.publish({"kind": n}))
+    app_observer = chain_observers(services.observer, lambda n, e: services.publish({"kind": n}))
     event = object()
     app_observer("recipe_recorded", event)
 
@@ -103,6 +110,7 @@ def test_runtime_defaults_to_no_session_and_a_no_op_refresh():
 
 
 # ── Resolving an app from the environment ──────────────────────────────────
+
 
 def test_resolve_accepts_a_hostapp_or_a_factory(monkeypatch, app_graph, tmp_path):
     module = tmp_path / "someapp.py"
@@ -136,11 +144,14 @@ def test_resolve_reads_the_environment(monkeypatch, app_graph, tmp_path):
     assert HostApp.resolve().graph.feat_path == app_graph.feat_path
 
 
-@pytest.mark.parametrize("spec,match", [
-    ("", "no host app"),
-    ("envapp", "not a 'module:attr' spec"),
-    ("no_such_module:APP", "cannot import"),
-])
+@pytest.mark.parametrize(
+    "spec,match",
+    [
+        ("", "no host app"),
+        ("envapp", "not a 'module:attr' spec"),
+        ("no_such_module:APP", "cannot import"),
+    ],
+)
 def test_resolve_failures_name_the_variable(monkeypatch, spec, match):
     """An operator reading a systemd journal has only what the error says."""
     monkeypatch.delenv("DIZZY_HOST_APP", raising=False)
@@ -151,9 +162,7 @@ def test_resolve_failures_name_the_variable(monkeypatch, spec, match):
 def test_resolve_failures_inside_the_app_are_attributed(monkeypatch, tmp_path):
     module = tmp_path / "brokenapp.py"
     module.write_text(
-        "NOT_AN_APP = 42\n"
-        "def raises():\n"
-        "    raise ValueError('secrets not loaded')\n"
+        "NOT_AN_APP = 42\ndef raises():\n    raise ValueError('secrets not loaded')\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     with pytest.raises(RuntimeError, match="has no 'missing'"):
@@ -165,6 +174,7 @@ def test_resolve_failures_inside_the_app_are_attributed(monkeypatch, tmp_path):
 
 
 # ── Both shells' queues are the same port ──────────────────────────────────
+
 
 def test_the_st_queue_and_bus_satisfy_the_ports(tmp_path):
     from dizzy.engine.st import DurableCommandQueue

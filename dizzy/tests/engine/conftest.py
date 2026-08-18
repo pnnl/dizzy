@@ -36,10 +36,8 @@ def def_package(tmp_path, monkeypatch):
         (root / "__init__.py").write_text("")
         (root / "pydantic" / "__init__.py").write_text("")
         for module, class_names in (("commands", commands), ("events", events)):
-            body = "\n".join(
-                f"class {c}:\n    pass\n" for c in class_names) or "pass\n"
-            (root / "pydantic" / f"{module}.py").write_text(
-                textwrap.dedent(body))
+            body = "\n".join(f"class {c}:\n    pass\n" for c in class_names) or "pass\n"
+            (root / "pydantic" / f"{module}.py").write_text(textwrap.dedent(body))
         monkeypatch.syspath_prepend(str(tmp_path))
         for mod in list(sys.modules):
             if mod.startswith(name):
@@ -52,10 +50,12 @@ def def_package(tmp_path, monkeypatch):
 @pytest.fixture
 def write_feat(tmp_path):
     """Write a feat file and return its path."""
+
     def write(body: str, name: str = "app.feat.yaml") -> Path:
         path = tmp_path / name
         path.write_text(body)
         return path
+
     return write
 
 
@@ -67,6 +67,7 @@ def _no_ambient_feat(monkeypatch):
     monkeypatch.delenv("DIZZY_FEAT_PATH", raising=False)
     monkeypatch.delenv("DIZZY_HOST_APP", raising=False)
     from dizzy.engine.registry import reset_graph
+
     reset_graph()
     yield
     reset_graph()

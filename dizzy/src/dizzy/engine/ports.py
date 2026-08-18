@@ -100,12 +100,13 @@ def _noop_observer(name: str, event: Any) -> None:
     return None
 
 
-def chain_observers(*observers: Callable[[str, Any], None]
-                    ) -> Callable[[str, Any], None]:
+def chain_observers(*observers: Callable[[str, Any], None]) -> Callable[[str, Any], None]:
     """Compose observers into the one the engine accepts, in order."""
+
     def observer(name: str, event: Any) -> None:
         for obs in observers:
             obs(name, event)
+
     return observer
 
 
@@ -213,8 +214,9 @@ class HostApp:
             raise RuntimeError(
                 f"$DIZZY_HOST_APP={spec!r} is not a 'module:attr' spec — set it "
                 f"to a module path and the name of a HostApp (or of a callable "
-                f"returning one)" if spec else
-                "no host app: set $DIZZY_HOST_APP to 'module:attr' naming a "
+                f"returning one)"
+                if spec
+                else "no host app: set $DIZZY_HOST_APP to 'module:attr' naming a "
                 "HostApp (or a callable returning one)"
             )
         module_name, _, attr = spec.partition(":")
@@ -225,7 +227,8 @@ class HostApp:
         except ImportError as exc:
             raise RuntimeError(
                 f"$DIZZY_HOST_APP={spec!r}: cannot import {module_name!r} "
-                f"({exc}) — is it on sys.path from this process's cwd?") from exc
+                f"({exc}) — is it on sys.path from this process's cwd?"
+            ) from exc
         try:
             obj = getattr(module, attr)
         except AttributeError as exc:
@@ -236,16 +239,17 @@ class HostApp:
             app = obj() if callable(obj) and not isinstance(obj, HostApp) else obj
         except Exception as exc:
             raise RuntimeError(
-                f"$DIZZY_HOST_APP={spec!r}: building the HostApp raised "
-                f"{type(exc).__name__}: {exc}") from exc
+                f"$DIZZY_HOST_APP={spec!r}: building the HostApp raised {type(exc).__name__}: {exc}"
+            ) from exc
         if not isinstance(app, HostApp):
             raise TypeError(
-                f"$DIZZY_HOST_APP={spec!r} resolved to {type(app).__name__}, "
-                f"not HostApp")
+                f"$DIZZY_HOST_APP={spec!r} resolved to {type(app).__name__}, not HostApp"
+            )
         return app
 
 
-def null_app(build_runtime: Callable[[ShellServices], Runtime],
-             feat_path: str | None = None) -> HostApp:
+def null_app(
+    build_runtime: Callable[[ShellServices], Runtime], feat_path: str | None = None
+) -> HostApp:
     """The minimal HostApp: a feat file and a way to build the engine."""
     return HostApp(graph=default_graph(feat_path), build_runtime=build_runtime)

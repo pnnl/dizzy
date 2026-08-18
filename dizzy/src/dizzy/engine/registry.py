@@ -35,7 +35,12 @@ from typing import Any
 
 # The sections of a feat file this graph understands. Order is the feat's own.
 TOPOLOGY_SECTIONS = (
-    "commands", "events", "procedures", "projections", "policies", "queries",
+    "commands",
+    "events",
+    "procedures",
+    "projections",
+    "policies",
+    "queries",
 )
 
 # Every section a feat may declare — TOPOLOGY_SECTIONS plus the ones that carry
@@ -87,12 +92,14 @@ def check_name(name: Any, section: str, feat_name: str) -> str:
         raise RuntimeError(
             f"{feat_name}: {section} declares a non-string name {name!r} "
             f"({type(name).__name__}) — quote it (YAML reads 123, yes, on, off "
-            f"as scalars)")
+            f"as scalars)"
+        )
     if not name or snake_case(camel_case(name)) != name:
         raise RuntimeError(
             f"{feat_name}: {section} declares {name!r}, which is not "
             f"snake_case — it would resolve to {camel_case(name)!r}, the same "
-            f"class as {snake_case(camel_case(name))!r}")
+            f"class as {snake_case(camel_case(name))!r}"
+        )
     return name
 
 
@@ -108,14 +115,17 @@ def find_feat(start: Path | None = None) -> Path:
         # An exported-but-empty variable is a misconfiguration, not "unset":
         # falling through to the walk-up would silently pick up whatever feat
         # happens to be nearest, which is worse than failing.
-        raise RuntimeError("$DIZZY_FEAT_PATH is set but empty — unset it to "
-                           "search upward, or point it at a feat file")
+        raise RuntimeError(
+            "$DIZZY_FEAT_PATH is set but empty — unset it to "
+            "search upward, or point it at a feat file"
+        )
     if env:
         path = Path(env).expanduser()
         if not path.is_file():
             raise FileNotFoundError(
                 f"$DIZZY_FEAT_PATH is not a file: {path}"
-                + (" (it is a directory)" if path.is_dir() else ""))
+                + (" (it is a directory)" if path.is_dir() else "")
+            )
         return path
     here = (start or Path.cwd()).resolve()
     for directory in (here, *here.parents):
@@ -127,9 +137,7 @@ def find_feat(start: Path | None = None) -> Path:
                 f"{directory} holds {len(found)} feat files "
                 f"({', '.join(p.name for p in found)}) — set $DIZZY_FEAT_PATH"
             )
-    raise FileNotFoundError(
-        f"no *.feat.yaml found from {here} upward — set $DIZZY_FEAT_PATH"
-    )
+    raise FileNotFoundError(f"no *.feat.yaml found from {here} upward — set $DIZZY_FEAT_PATH")
 
 
 class FeatGraph:
@@ -138,15 +146,17 @@ class FeatGraph:
     Construct with :meth:`load`. Cheap to hold; every resolution is cached.
     """
 
-    def __init__(self, feat_path: Path, raw: dict[str, Any],
-                 def_package: str = DEFAULT_DEF_PACKAGE):
+    def __init__(
+        self, feat_path: Path, raw: dict[str, Any], def_package: str = DEFAULT_DEF_PACKAGE
+    ):
         self.feat_path = feat_path
         self.raw = raw
         self.def_package = def_package
 
     @classmethod
-    def load(cls, feat_path: str | Path | None = None,
-             def_package: str = DEFAULT_DEF_PACKAGE) -> FeatGraph:
+    def load(
+        cls, feat_path: str | Path | None = None, def_package: str = DEFAULT_DEF_PACKAGE
+    ) -> FeatGraph:
         import yaml
 
         path = Path(feat_path) if feat_path else find_feat()
@@ -154,7 +164,8 @@ class FeatGraph:
         if not isinstance(raw, dict):
             raise RuntimeError(
                 f"{path.name} is not a feat file: its top level is "
-                f"{type(raw).__name__}, expected a mapping of sections")
+                f"{type(raw).__name__}, expected a mapping of sections"
+            )
         graph = cls(path, raw, def_package)
         graph._check_shape()
         return graph
@@ -171,14 +182,17 @@ class FeatGraph:
             value = self.raw.get(section)
             if value is None or isinstance(value, dict):
                 continue
-            hint = (" — a list of names is not a section; each entry needs a "
-                    "name: description mapping"
-                    if isinstance(value, list) else "")
+            hint = (
+                " — a list of names is not a section; each entry needs a name: description mapping"
+                if isinstance(value, list)
+                else ""
+            )
             raise RuntimeError(
                 f"{self.feat_path.name}: section {section!r} is a "
-                f"{type(value).__name__}, expected a mapping{hint}")
+                f"{type(value).__name__}, expected a mapping{hint}"
+            )
         for section in SECTIONS:
-            for name in (self.raw.get(section) or {}):
+            for name in self.raw.get(section) or {}:
                 check_name(name, section, self.feat_path.name)
 
     # ── Declared names (no imports needed) ───────────────────────────────────
@@ -186,8 +200,8 @@ class FeatGraph:
     def _section(self, section: str) -> dict[str, Any]:
         if section not in SECTIONS:
             raise KeyError(
-                f"{section!r} is not a feat section — expected one of "
-                f"{', '.join(SECTIONS)}")
+                f"{section!r} is not a feat section — expected one of {', '.join(SECTIONS)}"
+            )
         return self.raw.get(section) or {}
 
     def names(self, section: str) -> tuple[str, ...]:
@@ -213,7 +227,8 @@ class FeatGraph:
             return dict(value)
         raise RuntimeError(
             f"{self.feat_path.name}: {section}.{name} is a "
-            f"{type(value).__name__}, expected a mapping or a description string")
+            f"{type(value).__name__}, expected a mapping or a description string"
+        )
 
     @property
     def environment(self) -> tuple[str, ...]:
@@ -262,8 +277,7 @@ class FeatGraph:
     def command_class(self, name: str) -> type:
         cls = self.commands.get(name)
         if cls is None:
-            raise KeyError(
-                f"unknown command {name!r} — not declared in {self.feat_path.name}")
+            raise KeyError(f"unknown command {name!r} — not declared in {self.feat_path.name}")
         return cls
 
     def command_name(self, command: Any) -> str:
@@ -293,18 +307,18 @@ class FeatGraph:
             if declared != set(wired):
                 problems.append(
                     f"{section}: not wired={sorted(declared - set(wired))} "
-                    f"not in feat={sorted(set(wired) - declared)}")
+                    f"not in feat={sorted(set(wired) - declared)}"
+                )
         if problems:
             raise RuntimeError(
-                f"wiring/feat mismatch against {self.feat_path.name}: "
-                + "; ".join(problems))
+                f"wiring/feat mismatch against {self.feat_path.name}: " + "; ".join(problems)
+            )
 
 
 _graphs: dict[tuple[Path, str], FeatGraph] = {}
 
 
-def graph(feat_path: str | Path | None = None,
-          def_package: str = DEFAULT_DEF_PACKAGE) -> FeatGraph:
+def graph(feat_path: str | Path | None = None, def_package: str = DEFAULT_DEF_PACKAGE) -> FeatGraph:
     """Process-wide FeatGraph cache — a worker parses its feat once.
 
     Keyed on the RESOLVED path, not on nothing: an earlier version cached a

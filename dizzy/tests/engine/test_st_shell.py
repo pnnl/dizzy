@@ -57,6 +57,7 @@ def make_queue(tmp_path):
 
 # ── The round trip ──────────────────────────────────────────────────────────
 
+
 def test_a_command_survives_the_round_trip(make_queue):
     q = make_queue()
     job_id = q.put(Ingest(), origin="upload")
@@ -85,7 +86,7 @@ def test_an_unknown_command_type_errors_the_job_and_moves_on(make_queue, tmp_pat
 
     q = DurableCommandQueue(registry={}, path=tmp_path / "q.db")
     try:
-        q.put(Ingest())              # still unknown to this registry
+        q.put(Ingest())  # still unknown to this registry
         assert q.claim(timeout=0.05) is None
         assert q.counts()["error"] == 2
         assert "unknown command type" in q.jobs(status="error")[0]["error"]
@@ -95,10 +96,11 @@ def test_an_unknown_command_type_errors_the_job_and_moves_on(make_queue, tmp_pat
 
 # ── Durability ──────────────────────────────────────────────────────────────
 
+
 def test_work_in_flight_when_the_process_dies_comes_back(make_queue, tmp_path):
     first = make_queue()
     first.put(Ingest())
-    first.claim(timeout=1)                       # now 'running'
+    first.claim(timeout=1)  # now 'running'
     assert first.counts()["running"] == 1
     first.close()
 
@@ -119,11 +121,12 @@ def test_an_errored_job_can_be_retried_and_nothing_else_can(make_queue):
 
     assert q.retry(job_id) is True
     assert q.counts()["queued"] == 1
-    assert q.retry(job_id) is False               # no longer in 'error'
-    assert q.retry(99_999) is False               # never existed
+    assert q.retry(job_id) is False  # no longer in 'error'
+    assert q.retry(99_999) is False  # never existed
 
 
 # ── Lanes ───────────────────────────────────────────────────────────────────
+
 
 def test_lanes_are_claimed_independently(make_queue):
     q = make_queue(lane_of=lambda c: "chat" if c.original_name == "chat" else "default")
@@ -138,6 +141,7 @@ def test_lanes_are_claimed_independently(make_queue):
 
 
 # ── Labels are the host's vocabulary, not the shell's ──────────────────────
+
 
 def test_label_fields_are_injected(make_queue):
     q = make_queue(label_fields=("original_name",))
@@ -159,6 +163,7 @@ def test_the_default_label_fields_are_a_fallback_not_knowledge():
 
 
 # ── Fan-out ─────────────────────────────────────────────────────────────────
+
 
 def test_subscribers_see_every_transition(make_queue):
     q = make_queue()
@@ -192,6 +197,7 @@ def test_a_slow_subscriber_is_dropped_not_blocking(make_queue):
 
 
 # ── The telemetry ring ──────────────────────────────────────────────────────
+
 
 def test_the_ring_is_ordered_cursored_and_filterable():
     bus = TelemetryBus(maxlen=10)

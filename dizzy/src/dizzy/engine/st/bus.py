@@ -24,15 +24,19 @@ class TelemetryBus:
     def emit(self, record: dict[str, Any]) -> None:
         with self._lock:
             self._seq += 1
-            self._buf.append({
-                "seq": self._seq,
-                "ts": datetime.now(UTC).isoformat(),
-                **record,
-            })
+            self._buf.append(
+                {
+                    "seq": self._seq,
+                    "ts": datetime.now(UTC).isoformat(),
+                    **record,
+                }
+            )
 
-    def since(self, after: int = 0, limit: int = 500,
-              kind: str | None = None) -> list[dict[str, Any]]:
+    def since(
+        self, after: int = 0, limit: int = 500, kind: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._lock:
-            items = [r for r in self._buf if r["seq"] > after
-                     and (kind is None or r.get("kind") == kind)]
+            items = [
+                r for r in self._buf if r["seq"] > after and (kind is None or r.get("kind") == kind)
+            ]
         return items[:limit]

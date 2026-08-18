@@ -92,6 +92,7 @@ def mp(monkeypatch, write_feat, def_package):
 
 # ── Routing ─────────────────────────────────────────────────────────────────
 
+
 def test_an_unrouted_command_goes_to_the_default_pool(mp):
     mp["shell"].send_routed("record_recipe", "{}")
     (message,) = mp["sent"]
@@ -134,6 +135,7 @@ def test_dispatch_by_name_enqueues_without_building_the_library(mp):
 
 # ── The runtime seam ────────────────────────────────────────────────────────
 
+
 def test_the_shell_hands_its_collector_to_the_app(mp):
     """The engine takes ONE observer, so the shell's collector reaches it only
     if the app chains it. If the shell fails to offer one, there is nothing to
@@ -151,8 +153,9 @@ def test_the_runtime_is_built_once_and_refreshed_thereafter(mp):
     refreshes = {"n": 0}
 
     def build_runtime(services):
-        return Runtime(engine=mp["engine"],
-                       refresh=lambda: refreshes.__setitem__("n", refreshes["n"] + 1))
+        return Runtime(
+            engine=mp["engine"], refresh=lambda: refreshes.__setitem__("n", refreshes["n"] + 1)
+        )
 
     mp["make_app"](build_runtime=build_runtime)
     mp["shell"]._get_runtime()
@@ -168,6 +171,7 @@ def test_services_carry_the_pool_this_worker_serves(mp, monkeypatch):
 
 
 # ── Correlation ─────────────────────────────────────────────────────────────
+
 
 def test_a_dispatch_carries_the_origin_the_app_decides(mp):
     """The shell knows nothing about what the origin means — only that the app
@@ -206,15 +210,16 @@ def test_span_attributes_merge_the_apps_decoding(mp):
 
 def test_a_raising_span_attrs_hook_cannot_break_a_dispatch(mp):
     """Tracing is never load-bearing."""
+
     def boom(origin):
         raise RuntimeError("no")
 
     mp["make_app"](span_attrs=boom)
-    assert mp["shell"]._span_attrs("record_recipe", "x", None)["dizzy.command"] \
-        == "record_recipe"
+    assert mp["shell"]._span_attrs("record_recipe", "x", None)["dizzy.command"] == "record_recipe"
 
 
 # ── Running a command ───────────────────────────────────────────────────────
+
 
 def test_run_command_looks_the_class_up_in_the_declared_graph(mp):
     mp["shell"].run_command("record_recipe", "{}")
@@ -229,14 +234,16 @@ def test_an_undeclared_command_is_refused(mp):
 def test_a_failure_the_app_handles_is_not_retried(mp):
     """The app turned the failure into a fact, so the broker must not also
     retry the side effect."""
+
     class Boom(StubEngine):
         def run_command(self, command):
             raise ValueError("nope")
 
     mp["engine"] = Boom()
-    mp["make_app"](build_runtime=lambda s: Runtime(engine=mp["engine"]),
-                   on_command_done=lambda *a: True)
-    mp["shell"].run_command("record_recipe", "{}")     # must not raise
+    mp["make_app"](
+        build_runtime=lambda s: Runtime(engine=mp["engine"]), on_command_done=lambda *a: True
+    )
+    mp["shell"].run_command("record_recipe", "{}")  # must not raise
 
 
 def test_a_failure_the_app_declines_keeps_at_least_once_delivery(mp):
@@ -245,8 +252,9 @@ def test_a_failure_the_app_declines_keeps_at_least_once_delivery(mp):
             raise ValueError("nope")
 
     mp["engine"] = Boom()
-    mp["make_app"](build_runtime=lambda s: Runtime(engine=mp["engine"]),
-                   on_command_done=lambda *a: False)
+    mp["make_app"](
+        build_runtime=lambda s: Runtime(engine=mp["engine"]), on_command_done=lambda *a: False
+    )
     with pytest.raises(ValueError, match="nope"):
         mp["shell"].run_command("record_recipe", "{}")
 
@@ -268,8 +276,10 @@ def test_a_failed_command_leaves_nothing_behind_for_the_next(mp):
         def rollback(self):
             rolled_back["n"] += 1
 
-    mp["make_app"](build_runtime=lambda s: Runtime(engine=engine, session=Session()),
-                   on_command_done=lambda *a: True)
+    mp["make_app"](
+        build_runtime=lambda s: Runtime(engine=engine, session=Session()),
+        on_command_done=lambda *a: True,
+    )
     mp["shell"].run_command("record_recipe", "{}")
     assert engine._events == []
     assert rolled_back["n"] == 1

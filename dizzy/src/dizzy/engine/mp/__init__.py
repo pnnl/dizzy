@@ -61,6 +61,7 @@ Dispatch from any process:
 Config: $DIZZY_HOST_APP (required — the app manifest), $DIZZY_REDIS_URL
 (default redis://localhost:6379/0), $DIZZY_POOLS (pools this worker serves).
 """
+
 from __future__ import annotations
 
 import json
@@ -119,8 +120,9 @@ DEFAULT_ROUTE: tuple[str, dict] = ("default", {})
 _routes: dict[str, tuple[str, dict]] | None = None
 
 
-def send_routed(command_name: str, payload_json: str,
-                origin: str = "", job_id: int | None = None) -> None:
+def send_routed(
+    command_name: str, payload_json: str, origin: str = "", job_id: int | None = None
+) -> None:
     """Every broker dispatch funnels here: resolve the command's pool from the
     app's route table and enqueue on that pool's queue with its message
     options. Cached — pool wiring is startup config, a manifest edit means
@@ -136,12 +138,13 @@ def send_routed(command_name: str, payload_json: str,
     # trace tree per root dispatch.
     otel = _otel()
     with otel.tracer().start_as_current_span(
-            f"enqueue {command_name}", kind=SpanKind.PRODUCER,
-            attributes={"dizzy.command": command_name, "dizzy.pool": pool,
-                        "dizzy.origin": origin}):
+        f"enqueue {command_name}",
+        kind=SpanKind.PRODUCER,
+        attributes={"dizzy.command": command_name, "dizzy.pool": pool, "dizzy.origin": origin},
+    ):
         message = run_command.message_with_options(
-            args=(command_name, payload_json, origin, job_id, otel.inject()),
-            **options)
+            args=(command_name, payload_json, origin, job_id, otel.inject()), **options
+        )
         if pool != message.queue_name:
             message = message.copy(queue_name=pool)
         dramatiq.get_broker().enqueue(message)
@@ -154,6 +157,7 @@ def _redis():
     global _redis_client
     if _redis_client is None:
         import redis as redis_mod
+
         _redis_client = redis_mod.Redis.from_url(REDIS_URL)
     return _redis_client
 
@@ -185,12 +189,24 @@ def _log(msg: str, name: str = "log", outcome: str = "") -> None:
     Also mirrored through stdlib logging: an OTLP LoggingHandler on the root
     logger sends the same record to the logs backend (with trace correlation).
     The pipe handler it ALSO reaches is armored below (_safe_pipe_write)."""
-    publish({"kind": "worker", "name": name, "trigger": f"pid {os.getpid()}",
-             "duration_ms": None, "outcome": outcome, "detail": msg})
+    publish(
+        {
+            "kind": "worker",
+            "name": name,
+            "trigger": f"pid {os.getpid()}",
+            "duration_ms": None,
+            "outcome": outcome,
+            "detail": msg,
+        }
+    )
     try:
         import logging
-        (logging.getLogger("dizzy-worker").error if outcome == "error"
-         else logging.getLogger("dizzy-worker").info)("%s: %s", name, msg)
+
+        (
+            logging.getLogger("dizzy-worker").error
+            if outcome == "error"
+            else logging.getLogger("dizzy-worker").info
+        )("%s: %s", name, msg)
     except Exception:
         pass
 
@@ -212,7 +228,7 @@ try:
             return len(s or "")
 
     _dramatiq_compat.StreamablePipe.write = _safe_pipe_write  # noqa: B010  # ty: ignore[invalid-assignment]
-except Exception:   # pragma: no cover — future dramatiq refactor: fail open
+except Exception:  # pragma: no cover — future dramatiq refactor: fail open
     pass
 
 
@@ -229,15 +245,14 @@ class BrokerCommandQueue:
         current = getattr(_runtime_engine(), "current_event", None)
         if current is not None:
             origin = app().origin_for(current, command) or origin
-        send_routed(snake_case(type(command).__name__),
-                    command.model_dump_json(), origin, None)
+        send_routed(snake_case(type(command).__name__), command.model_dump_json(), origin, None)
 
     def qsize(self) -> int:
         return 0  # broker-side depth is Redis's business, not the engine's
 
 
 _runtime = None
-_emitted: list = []   # (name, event) of the command currently running
+_emitted: list = []  # (name, event) of the command currently running
 
 
 def _runtime_engine():
@@ -258,37 +273,45 @@ def _get_runtime():
     can change secrets while workers run)."""
     global _runtime
     if _runtime is None:
-        _runtime = app().build_runtime(ShellServices(
-            command_queue=BrokerCommandQueue(),
-            publish=publish,
-            pool=os.environ.get("DIZZY_POOLS", "default"),
-            observer=_collect,
-        ))
+        _runtime = app().build_runtime(
+            ShellServices(
+                command_queue=BrokerCommandQueue(),
+                publish=publish,
+                pool=os.environ.get("DIZZY_POOLS", "default"),
+                observer=_collect,
+            )
+        )
     else:
         _runtime.refresh()
     return _runtime
 
 
-def _span_attrs(command_name: str, origin: str,
-                job_id: int | None) -> dict:
+def _span_attrs(command_name: str, origin: str, job_id: int | None) -> dict:
     """Correlation as span attributes: traces become searchable by the same
     keys the app uses — the ledger id here, and whatever the app decodes out
     of its own origin string through ``span_attrs``."""
-    attrs = {"dizzy.command": command_name, "dizzy.origin": origin,
-             "dizzy.pool": os.environ.get("DIZZY_POOLS", "default")}
+    attrs = {
+        "dizzy.command": command_name,
+        "dizzy.origin": origin,
+        "dizzy.pool": os.environ.get("DIZZY_POOLS", "default"),
+    }
     if job_id is not None:
         attrs["dizzy.job_id"] = job_id
     try:
         attrs.update(app().span_attrs(origin))
-    except Exception:   # tracing is never load-bearing
+    except Exception:  # tracing is never load-bearing
         pass
     return attrs
 
 
 @dramatiq.actor(max_retries=3, time_limit=600_000)
-def run_command(command_name: str, payload_json: str,
-                origin: str = "", job_id: int | None = None,
-                carrier: dict | None = None) -> None:
+def run_command(
+    command_name: str,
+    payload_json: str,
+    origin: str = "",
+    job_id: int | None = None,
+    carrier: dict | None = None,
+) -> None:
     """The uniform unit of work: claim → build engine → run_command → ack.
 
     ``origin``/``job_id`` are correlation, not routing: origin carries whatever
@@ -303,9 +326,12 @@ def run_command(command_name: str, payload_json: str,
 
     command_cls = host.graph.command_class(command_name)
     with otel.tracer().start_as_current_span(
-            f"run {command_name}", context=otel.extract(carrier),
-            kind=SpanKind.CONSUMER, record_exception=True,
-            attributes=_span_attrs(command_name, origin, job_id)) as span:
+        f"run {command_name}",
+        context=otel.extract(carrier),
+        kind=SpanKind.CONSUMER,
+        record_exception=True,
+        attributes=_span_attrs(command_name, origin, job_id),
+    ) as span:
         runtime = _get_runtime()
         _log(command_name, name="run_command")
         _emitted.clear()
@@ -316,23 +342,28 @@ def run_command(command_name: str, payload_json: str,
         except Exception as exc:
             runtime.engine._events.clear()  # a failed run must not leak its
             if runtime.session is not None:  # un-appended events into the NEXT
-                runtime.session.rollback()   # command on this process (st builds
-                                             # a fresh engine per job; this
-                                             # singleton must reset instead)
+                runtime.session.rollback()  # command on this process (st builds
+                # a fresh engine per job; this
+                # singleton must reset instead)
             import traceback
-            span.set_status(Status(StatusCode.ERROR,
-                                   f"{type(exc).__name__}: {exc}"))
-            _log(f"{type(exc).__name__}: {exc}", name=command_name,
-                 outcome="error")
+
+            span.set_status(Status(StatusCode.ERROR, f"{type(exc).__name__}: {exc}"))
+            _log(f"{type(exc).__name__}: {exc}", name=command_name, outcome="error")
             if job_id is not None:
-                publish({"kind": "job", "id": job_id, "status": "error",
-                         "error": traceback.format_exc()[:4000]})
+                publish(
+                    {
+                        "kind": "job",
+                        "id": job_id,
+                        "status": "error",
+                        "error": traceback.format_exc()[:4000],
+                    }
+                )
             # The app decides whether this origin means "record the failure as
             # a fact instead of retrying" — if it handled it, don't ALSO let
             # the broker retry the side effect.
-            if host.on_command_done(origin, "error",
-                                    f"{type(exc).__name__}: {exc}",
-                                    list(_emitted)):
+            if host.on_command_done(
+                origin, "error", f"{type(exc).__name__}: {exc}", list(_emitted)
+            ):
                 return
             raise
         if job_id is not None:
