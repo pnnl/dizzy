@@ -76,6 +76,15 @@ wheels = [
 ]
 
 [[package]]
+name = "async-timeout"
+version = "5.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/ae/136395dfbfe00dfc94da3f3e136d0b13f394cba8f4841120e34226265780/async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3", size = 9274, upload-time = "2024-11-06T16:41:39.6Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/ba/e2081de779ca30d473f21f5b30e0e737c438205440784c7dfc81efc2b029/async_timeout-5.0.1-py3-none-any.whl", hash = "sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c", size = 6233, upload-time = "2024-11-06T16:41:37.9Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "25.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -293,15 +302,34 @@ wheels = [
 name = "dizzy"
 source = { editable = "." }
 dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "dramatiq", extra = ["redis"] },
+    { name = "linkml" },
+    { name = "openai" },
+    { name = "opentelemetry-api" },
+    { name = "python-dotenv" },
+    { name = "redis" },
+    { name = "typer" },
+]
+gen = [
     { name = "linkml" },
     { name = "openai" },
     { name = "python-dotenv" },
-    { name = "pyyaml" },
     { name = "typer" },
+]
+mp = [
+    { name = "dramatiq", extra = ["redis"] },
+    { name = "opentelemetry-api" },
+    { name = "redis" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "dizzy", extra = ["gen", "mp"] },
     { name = "pytest" },
     { name = "ruff" },
     { name = "syrupy" },
@@ -318,15 +346,27 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "linkml", specifier = ">=1.9.5" },
-    { name = "openai", specifier = ">=2.42.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "dramatiq", extras = ["redis"], marker = "extra == 'all'", specifier = ">=1.17" },
+    { name = "dramatiq", extras = ["redis"], marker = "extra == 'mp'", specifier = ">=1.17" },
+    { name = "linkml", marker = "extra == 'all'", specifier = ">=1.9.5" },
+    { name = "linkml", marker = "extra == 'gen'", specifier = ">=1.9.5" },
+    { name = "openai", marker = "extra == 'all'", specifier = ">=2.42.0" },
+    { name = "openai", marker = "extra == 'gen'", specifier = ">=2.42.0" },
+    { name = "opentelemetry-api", marker = "extra == 'all'", specifier = ">=1.27" },
+    { name = "opentelemetry-api", marker = "extra == 'mp'", specifier = ">=1.27" },
+    { name = "python-dotenv", marker = "extra == 'all'", specifier = ">=1.0.0" },
+    { name = "python-dotenv", marker = "extra == 'gen'", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "typer", specifier = ">=0.20.0" },
+    { name = "redis", marker = "extra == 'all'", specifier = ">=5" },
+    { name = "redis", marker = "extra == 'mp'", specifier = ">=5" },
+    { name = "typer", marker = "extra == 'all'", specifier = ">=0.20.0" },
+    { name = "typer", marker = "extra == 'gen'", specifier = ">=0.20.0" },
 ]
+provides-extras = ["all", "gen", "mp", "st"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "dizzy", extras = ["gen", "mp", "st"] },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.9" },
     { name = "syrupy", specifier = ">=4.0" },
@@ -348,6 +388,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ae/ed/aefcc8cd0ba62a0560c3c18c33925362d46c6075480bfa4df87b28e169a9/docutils-0.21.2.tar.gz", hash = "sha256:3a6b18732edf182daa3cd12775bbb338cf5691468f91eeeb109deff6ebfa986f", size = 2204444, upload-time = "2024-04-23T18:57:18.24Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/d7/9322c609343d929e75e7e5e6255e614fcc67572cfd083959cdef3b7aad79/docutils-0.21.2-py3-none-any.whl", hash = "sha256:dafca5b9e384f0e419294eb4d2ff9fa826435bf15f15b7bd45723e8ad76811b2", size = 587408, upload-time = "2024-04-23T18:57:14.835Z" },
+]
+
+[[package]]
+name = "dramatiq"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/fb/78b1b689c4a121fc762ab6f00674cfa7246980678117edb03cbb168e5f9f/dramatiq-2.2.0.tar.gz", hash = "sha256:70c9278b0a9b880aeb23b8e09c9d43b1421ac8e807ef18903f6dd059130474a1", size = 108462, upload-time = "2026-06-17T11:18:34.629Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/57/a9be0b205b24e794c833a5295497f914776eb4d606d5a25a5b290e8b75ec/dramatiq-2.2.0-py3-none-any.whl", hash = "sha256:2b2aa244b4098e154600c47cdb2c04cec6c3af44e9e159c319c6fc8b6f0ba90e", size = 127342, upload-time = "2026-06-17T11:18:33.433Z" },
+]
+
+[package.optional-dependencies]
+redis = [
+    { name = "redis" },
 ]
 
 [[package]]
@@ -1085,6 +1139,18 @@ wheels = [
 ]
 
 [[package]]
+name = "opentelemetry-api"
+version = "1.44.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ee/8b/aa9e2d8b8dfa7c946f7dec5d1f8f6ba8eca062f43509a06bdb5ce93d26c0/opentelemetry_api-1.44.0.tar.gz", hash = "sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a", size = 72406, upload-time = "2026-07-16T15:25:32.678Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/6f/a04e900f465ff3221ccc395522503e2d10e79fa21f2723c8e177aae1e0d1/opentelemetry_api-1.44.0-py3-none-any.whl", hash = "sha256:94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef", size = 60018, upload-time = "2026-07-16T15:25:11.657Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1551,6 +1617,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1b/c8/1014ec6b5f4428c630deffba1f9851043ae378eb1d6ef52a03bd492cea99/rdflib_shim-1.0.3.tar.gz", hash = "sha256:d955d11e2986aab42b6830ca56ac6bc9c893abd1d049a161c6de2f1b99d4fc0d", size = 7783, upload-time = "2021-12-21T16:31:06.945Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/97/d8a785d2c7131c731c90cb0e65af9400081af4380bea4ec04868dc21aa92/rdflib_shim-1.0.3-py3-none-any.whl", hash = "sha256:7a853e7750ef1e9bf4e35dea27d54e02d4ed087de5a9e0c329c4a6d82d647081", size = 5190, upload-time = "2021-12-21T16:31:05.719Z" },
+]
+
+[[package]]
+name = "redis"
+version = "8.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "async-timeout", marker = "python_full_version < '3.11.3'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/99/604f0b666d4c616d891cf77ebb9db6bb21601344c051aebf1b72b9ff915f/redis-8.1.0.tar.gz", hash = "sha256:6e1a19beef9225c83efd689c7e6b7da2d5215b1f42cd13b7fc3714d0a09c7b25", size = 5254356, upload-time = "2026-07-30T08:51:00.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/9d/c5731f6e3608663d4d3656fd8d3aecee8b509c3082818f5a13eae925baea/redis-8.1.0-py3-none-any.whl", hash = "sha256:a4fe1aac3d3b3cc791d4b3d5931c5a956045dc951ee74d1c913ee3ac4d2ee9fb", size = 560618, upload-time = "2026-07-30T08:50:58.497Z" },
 ]
 
 [[package]]

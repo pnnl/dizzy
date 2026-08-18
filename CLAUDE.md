@@ -37,7 +37,15 @@ how often a task needs them:
 6. **`dizzy/src/dizzy/`** — implementation: `cli.py` (verbs), `feat_schema.py` /
    `libconfig_schema.py` (generated — edit `dizzy/src/dizzy/def/*.yaml` and run
    `just gen-feat-pydantic` / `just gen-libconfig-pydantic` instead), `generators/`.
-7. **`docs/whitepaper.typ`, `docs/PNF.md`** — theory and rationale.
+7. **`dizzy/src/dizzy/engine/`** — the runtime kit (seed `dizzy-ffdc`): `registry.py`
+   (`FeatGraph` — the feat read as an app's topology, every declared name resolved to
+   its generated class), `ports.py` (`HostApp`/`ShellServices`/`Runtime` — the seam an
+   app publishes itself through), and the two scheduling shells `st/` and `mp/`.
+   **The rule here: a shell must never name a command, event, or environment field.**
+   It reads them. Anything app-specific arrives through the `HostApp` a host sets in
+   `$DIZZY_HOST_APP`. Deps: core is pyyaml only, the generator's tree lives behind the
+   `gen` extra and `mp`'s broker behind `mp` — a worker must not inherit either.
+8. **`docs/whitepaper.typ`, `docs/PNF.md`** — theory and rationale.
    Maintainer-authored: AI may review/fact-check these, never author them.
 
 ## CLI at a glance
