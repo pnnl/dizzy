@@ -16,13 +16,35 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
 ]
 dynamic = ["version"]
+# Core is what the RUNTIME needs — dizzy.engine reads feat files, and that is
+# all it costs. The generator's tree (linkml, openai, typer) moved behind the
+# `gen` extra when the engine shells landed here: a worker process installs
+# dizzy to get a scheduling shell, and must not inherit a code generator it
+# will never call. `pip install dizzy[gen]` is the authoring install and what
+# the `dizzy` CLI needs; `just install` uses it.
 dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Authoring: the `dizzy` CLI and every generator.
+gen = [
     "linkml>=1.9.5",
     "openai>=2.42.0",
     "python-dotenv>=1.0.0",
-    "pyyaml>=6.0",
     "typer>=0.20.0",
 ]
+# Scheduling shells. st is stdlib-only and needs no extra; it is declared so
+# `dizzy[st]` is spellable and stays a stable name if that ever changes.
+st = []
+mp = [
+    "dramatiq[redis]>=1.17",
+    "redis>=5",
+    # Tracing API only. The SDK, its exporters and their configuration are the
+    # host's (HostApp.otel), so a worker can run with tracing switched off.
+    "opentelemetry-api>=1.27",
+]
+all = ["dizzy[gen,mp,st]"]
 
 [project.urls]
 Homepage = "https://github.com/PNNL/dizzy"
@@ -34,6 +56,7 @@ dizzy = "dizzy.cli:main"
 
 [dependency-groups]
 dev = [
+    "dizzy[gen,mp,st]",
     "pytest>=8.4.2",
     "syrupy>=4.0",
     "ruff>=0.9",

@@ -34,8 +34,20 @@ Requires **Python 3.11+**, [uv](https://docs.astral.sh/uv/), and (optionally)
 [just](https://github.com/casey/just).
 
 ```bash
-uv tool install --editable .   # or: just install
+uv tool install --editable ".[gen]"   # or: just install
 dizzy --help
+```
+
+The `gen` extra carries the generator (LinkML, the CLI) and is what authoring
+needs. It is an extra rather than a core dependency because DIZZY also ships a
+**runtime**: `dizzy.engine` schedules a generated feature, and a worker process
+that installs DIZZY for a scheduling shell should not inherit a code generator
+it will never call. Pick what you need:
+
+```bash
+uv add "dizzy[gen]"   # authoring: the CLI and every generator
+uv add "dizzy[mp]"    # running a fleet: the Dramatiq/Redis shell
+uv add dizzy          # the engine layer alone (pyyaml, nothing else)
 ```
 
 ## The model
@@ -184,6 +196,12 @@ This is a **uv monorepo**:
 
 - **`dizzy/`** — the core package and generators (`dizzy/src/dizzy/`). The CLI's own
   docs ship here (`dizzy/src/dizzy/docs/`) and print via `dizzy docs` / `dizzy onboard`.
+- **`dizzy/src/dizzy/engine/`** — the **runtime kit**: how a generated feature gets
+  RUN. `registry` reads a feat file into an app's topology (resolving every declared
+  command and event to its generated class), `ports` is the seam an app publishes
+  itself through, and `st` / `mp` are the two scheduling shells — single-process and
+  Dramatiq/Redis fleet. A shell schedules an app it knows nothing about: the feat
+  already declares everything, so nothing is hard-coded.
 - **`examples/`** — worked examples.
 - **`docs/`** — the [mkdocs](https://www.mkdocs.org/) documentation site, organized by
   [Diátaxis](https://diataxis.fr/) (tutorials / how-to / reference / explanation), plus
