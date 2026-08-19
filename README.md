@@ -134,6 +134,9 @@ dizzy generate libraries  guestbook.feat.yaml ./out
 
 #        implement the bodies in
 #        out/lib/python-uv/{procedure,policy,projection,query}/<name>/src/*.py
+
+# 4. generate the wiring: those elements bound to the runtime, ready to run
+dizzy generate wiring  guestbook.feat.yaml ./out
 ```
 
 What lands in `./out`:
@@ -146,12 +149,19 @@ out/
     └── python-uv/
         ├── gen_def/      # generated — Pydantic + SQLAlchemy from your LinkML
         ├── gen_int/      # generated — typed Protocols, contexts, adapters
+        ├── wiring/       # generated — elements bound to the engine + a HostApp
         └── <kind>/<name>/src/  # YOU implement — stubs (never overwritten)
 ```
 
 Each runtime tree is a self-contained workspace: `gen_def` and `gen_int` are
 installable packages, and every element package depends on them — so a generated
 `lib/python-uv/` can be lifted out and shipped on its own.
+
+The `wiring/` package is the one that makes it *run*: it registers each procedure
+under the command it handles and each projection under the event it folds, binding
+every emitter to a `dizzy.engine` engine. That binding is a pure function of the
+feature-file, so it is generated rather than hand-written — the design stays in the
+artifact, and the wiring cannot drift from it.
 
 > **Naming:** you write `snake_case` element names; LinkML compiles them to
 > `PascalCase` Pydantic classes (`sign_guestbook` → `SignGuestbook`). Generated code

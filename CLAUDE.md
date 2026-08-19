@@ -22,7 +22,7 @@ dizzy onboard
 This is a map, not a reading list — pull in only what your task needs. Ordered by
 how often a task needs them:
 
-1. **`README.md`** — what/why, install, minimal feature, the three-stage workflow.
+1. **`README.md`** — what/why, install, minimal feature, the four-stage workflow.
 2. **`dizzy/src/dizzy/docs/cli.md`** — CLI manpage **and roadmap**. The canonical
    end-state: every command section is the requirements doc for that command. Seeds
    reference these sections. Ships with the tool; printed by `dizzy docs`. *Keep this
@@ -61,8 +61,10 @@ how often a task needs them:
 
 ## CLI at a glance
 
-- `dizzy generate definitions|static|libraries <feat> <out>` — the shipped pipeline
-  (legacy aliases: `def`/`gen`/`lib`).
+- `dizzy generate definitions|static|libraries|wiring <feat> <out>` — the shipped
+  pipeline (legacy aliases: `def`/`gen`/`lib`). `wiring` emits `lib/<runtime>/wiring/`:
+  the elements bound to a `dizzy.engine` engine, plus the `HostApp` a shell resolves.
+  It is the only generated package that depends on DIZZY itself.
 - `dizzy docs [cli|authoring]` — print documentation; `dizzy config` — config template.
 - Roadmap commands (`lint`, `diff`, `impact`, `simulate`, …) are specified in
   `dizzy/src/dizzy/docs/cli.md` and tracked as seeds.

@@ -31,4 +31,8 @@ members = [
   "projection/inventory_consumer",
   "projection/generation_graph",
   "projection/derivation_graph",
+  "wiring",
 ]
+
+[tool.uv.sources]
+dizzy = { path = "../../../..", editable = true }

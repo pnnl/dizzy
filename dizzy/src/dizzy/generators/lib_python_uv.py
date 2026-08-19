@@ -47,20 +47,42 @@ def render_element_pyproject_toml(kind: str, name: str) -> str:
 _TYPE_PACKAGE_MEMBERS = ["gen_def", "gen_int"]
 
 
-def render_workspace_pyproject_toml(members: list[tuple[str, str]]) -> str:
-    member_lines = "\n".join(
-        f'  "{member}",'
-        for member in _TYPE_PACKAGE_MEMBERS + [f"{kind}/{name}" for kind, name in members]
-    )
-    return "\n".join(
-        [
-            "[tool.uv.workspace]",
-            "members = [",
-            member_lines,
-            "]",
+def render_workspace_pyproject_toml(
+    members: list[tuple[str, str]],
+    include_wiring: bool = False,
+    dizzy_source: str | None = None,
+) -> str:
+    """The uv workspace manifest.
+
+    *include_wiring* adds the generated wiring package, which `dizzy generate
+    wiring` emits as a fourth stage. It is opt-in because listing a member that
+    has not been generated makes the whole workspace unresolvable.
+
+    *dizzy_source* resolves the wiring package's dependency on DIZZY against a
+    local checkout instead of an index — the usual case when the generated lib
+    lives inside the repository that generated it.
+    """
+    all_members = _TYPE_PACKAGE_MEMBERS + [f"{kind}/{name}" for kind, name in members]
+    if include_wiring:
+        all_members.append("wiring")
+    member_lines = "\n".join(f'  "{member}",' for member in all_members)
+    lines = [
+        "[tool.uv.workspace]",
+        "members = [",
+        member_lines,
+        "]",
+        "",
+    ]
+    if dizzy_source:
+        # The wiring package depends on DIZZY itself. Point that at a checkout
+        # when the workspace lives inside (or beside) one — a workspace-root
+        # source applies to every member, so the wiring manifest stays portable.
+        lines += [
+            "[tool.uv.sources]",
+            f'dizzy = {{ path = "{dizzy_source}", editable = true }}',
             "",
         ]
-    )
+    return "\n".join(lines)
 
 
 def _write_if_absent(path: Path, content: str) -> None:
@@ -98,8 +120,13 @@ def write_projection_python_uv(proj: ProjectionDef, output_dir: Path) -> None:
     _write_if_absent(base / "src" / f"{proj.name}.py", render_src_projection_stub(proj))
 
 
-def write_workspace_python_uv(members: list[tuple[str, str]], output_dir: Path) -> None:
+def write_workspace_python_uv(
+    members: list[tuple[str, str]],
+    output_dir: Path,
+    include_wiring: bool = False,
+    dizzy_source: str | None = None,
+) -> None:
     dest = output_dir / "lib" / "python-uv" / "pyproject.toml"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(render_workspace_pyproject_toml(members))
+    dest.write_text(render_workspace_pyproject_toml(members, include_wiring, dizzy_source))
     logger.debug("wrote file", extra={"path": str(dest)})

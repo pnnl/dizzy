@@ -17,7 +17,7 @@ rebuilt into it and queried back out.
 Run inside the workspace environment, layering in the web deps (from the repo root):
 
     uv run --project examples/recipes/lib/python-uv \\
-        --with-editable . --with fastapi --with "uvicorn[standard]" \\
+        --with fastapi --with "uvicorn[standard]" \\
         python examples/recipes/server.py
 
 Then open http://127.0.0.1:8000/ for the browser UI, or /docs for the raw API.

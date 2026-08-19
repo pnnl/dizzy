@@ -1,0 +1,598 @@
+# serializer version: 1
+# name: test_render_wiring_pyproject_snapshot
+  '''
+  [project]
+  name = "wiring"
+  version = "0.1.0"
+  requires-python = ">=3.11"
+  dependencies = [
+      "dizzy",
+      "gen_def",
+      "gen_int",
+      "procedure-extract_and_transform_recipe",
+      "policy-index_recipe_on_ingest",
+      "projection-recipe_library",
+      "query-get_recipe_text",
+      "query-get_recipe",
+  ]
+  
+  [tool.uv.sources]
+  gen_def = { workspace = true }
+  gen_int = { workspace = true }
+  procedure-extract_and_transform_recipe = { workspace = true }
+  policy-index_recipe_on_ingest = { workspace = true }
+  projection-recipe_library = { workspace = true }
+  query-get_recipe_text = { workspace = true }
+  query-get_recipe = { workspace = true }
+  
+  [build-system]
+  requires = ["hatchling"]
+  build-backend = "hatchling.build"
+  
+  [tool.hatch.build.targets.wheel]
+  sources = ["src"]
+  include = ["src/wiring.py", "src/*.feat.yaml"]
+  
+  '''
+# ---
+# name: test_render_wiring_snapshot
+  '''
+  # AUTO-GENERATED — do not edit. Regenerate with `dizzy generate wiring`.
+  """Wiring for the recipe feature: elements bound to a DIZZY engine.
+  
+  Generated from recipe.feat.yaml. Every registration below is a line of that file read
+  back out, which is why editing this module is the wrong move — the next
+  regeneration discards it. To specialize one element's binding, pass an override:
+  
+      build_engine(queue, store, Resources(adapters=..., overrides={"extract_and_transform_recipe": my_runner}))
+  
+  The wiring is engine-mediated. A procedure's emitters go to ``engine.emit_event``
+  and a policy's to ``engine.dispatch_command``, so no element ever calls another;
+  the engine appends each event, folds its projections, commits, and only then lets
+  policies dispatch. A dispatched command lands on the queue as the next unit of
+  work — draining that queue is the scheduling shell's job, not this module's.
+  """
+  
+  from __future__ import annotations
+  
+  from collections.abc import Callable, Mapping
+  from dataclasses import dataclass, field
+  from pathlib import Path
+  from typing import Any
+  
+  from dizzy.engine import (
+      Engine,
+      EventStore,
+      FeatGraph,
+      HostApp,
+      Runtime,
+      ShellServices,
+  )
+  
+  from gen_def.pydantic.commands import (
+      IngestRecipeText,
+  )
+  from gen_def.pydantic.events import (
+      RecipeIngested,
+  )
+  from gen_int.python.adapters.relative_filesystem import RelativeFilesystemAdapter
+  from gen_int.python.adapters.sqla import SqlaAdapter
+  from gen_int.python.procedure.extract_and_transform_recipe_context import (
+      extract_and_transform_recipe_context,
+      extract_and_transform_recipe_emitters,
+      extract_and_transform_recipe_queries,
+  )
+  from gen_int.python.policy.index_recipe_on_ingest_context import (
+      index_recipe_on_ingest_context,
+      index_recipe_on_ingest_emitters,
+      index_recipe_on_ingest_queries,
+  )
+  from gen_int.python.projection.recipe_library_projection import (
+      recipe_library_context,
+  )
+  from gen_int.python.query.get_recipe_text import (
+      get_recipe_text_context,
+  )
+  from gen_int.python.query.get_recipe import (
+      get_recipe_context,
+  )
+  
+  # The element implementations — each is its own workspace package.
+  from extract_and_transform_recipe import extract_and_transform_recipe
+  from index_recipe_on_ingest import index_recipe_on_ingest
+  from recipe_library import recipe_library
+  from get_recipe_text import get_recipe_text
+  from get_recipe import get_recipe
+  
+  @dataclass
+  class Resources:
+      """What a host supplies so the declared elements can actually run."""
+  
+      adapters: Mapping[str, Any] = field(default_factory=dict)
+      """Adapter instances by name: ``relative_filesystem``, ``sqla``."""
+  
+      env: Any = None
+      """Unused: this feature declares no environment."""
+  
+      telemetry: Any = None
+      """Unused: this feature declares no telemetry."""
+  
+      overrides: Mapping[str, Callable] = field(default_factory=dict)
+      """Element name -> replacement runner. The supported way to specialize a
+      binding: a capability-pooled element a node must not import, a query that
+      needs a short-lived session. Forking this module to get the same effect
+      throws away the guarantee that it matches the feat."""
+  
+      adapter_for: Callable[[str, Any], Any] | None = None
+      """Optional per-call adapter factory, ``(adapter_name, ingested_at) ->
+      adapter``. Supply it when a projection must see the event's stream-append
+      time; otherwise the static instance from ``adapters`` is used for every
+      fold."""
+  
+      def adapter(self, name: str, ingested_at: Any = None) -> Any:
+          if self.adapter_for is not None:
+              return self.adapter_for(name, ingested_at)
+          return self.adapters[name]
+  
+  @dataclass
+  class Queries:
+      """Every declared query, bound to the read adapter.
+  
+      Procedures and policies receive these through their generated context, so
+      a query is called with its input alone — the adapter is already bound."""
+  
+      get_recipe_text: Callable[[Any], Any]
+      get_recipe: Callable[[Any], Any]
+  
+  
+  def build_queries(resources: Resources) -> Queries:
+      """Bind every querier over the read adapter its model declares."""
+      def _get_recipe_text(inp: Any) -> Any:
+          return get_recipe_text(
+              inp,
+              get_recipe_text_context(
+                  adapter=resources.adapter("relative_filesystem"),
+              ),
+          )
+  
+      def _get_recipe(inp: Any) -> Any:
+          return get_recipe(
+              inp,
+              get_recipe_context(
+                  adapter=resources.adapter("sqla"),
+              ),
+          )
+  
+      return Queries(
+          get_recipe_text=resources.overrides.get("get_recipe_text", _get_recipe_text),
+          get_recipe=resources.overrides.get("get_recipe", _get_recipe),
+      )
+  
+  def build_projection_runners(
+      resources: Resources,
+  ) -> dict[type, list[tuple[str, Callable]]]:
+      """Event class -> ``[(name, runner)]``, the shape the engine registers.
+  
+      The same map drives ``dizzy.engine.rebuild.rebuild`` and
+      ``replicate.fold_envelopes``, so one registration serves all three
+      triggers and a refold cannot fold a different set than the engine."""
+      def _recipe_library(event: Any, ingested_at: Any = None) -> None:
+          recipe_library(
+              event,
+              recipe_library_context(
+                  adapter=resources.adapter("sqla", ingested_at),
+              ),
+          )
+  
+      runners: dict[type, list[tuple[str, Callable]]] = {}
+      runners.setdefault(RecipeIngested, []).append(("recipe_library", resources.overrides.get("recipe_library", _recipe_library)))
+      return runners
+  
+  def build_engine(
+      command_queue: Any,
+      store: EventStore,
+      resources: Resources,
+      observer: Callable[[str, Any], None] | None = None,
+      commit: Callable[[], None] | None = None,
+      bus: Callable[[dict], None] | None = None,
+      otel: Any = None,
+  ) -> Engine:
+      """Register every declared element and return the engine.
+  
+      *command_queue* is the shell's: dispatches leave through it, and draining
+      it is the shell's job. *commit* is the read-model transaction boundary the
+      engine owns — it fires once per event, after the fold, before policies."""
+      engine = Engine(
+          command_queue=command_queue,
+          store=store,
+          observer=observer,
+          commit=commit,
+          bus=bus,
+          otel=otel,
+      )
+      queries = build_queries(resources)
+  
+      # Data loop: one registration per declared event: projection edge.
+      for event_class, runners in build_projection_runners(resources).items():
+          for name, runner in runners:
+              engine.register_projection(event_class, runner, name=name)
+  
+      # Reactivity loop: a policy's emits are COMMANDS, dispatched.
+      def _index_recipe_on_ingest(event: Any) -> None:
+          index_recipe_on_ingest(
+              event,
+              index_recipe_on_ingest_context(
+                  emit=index_recipe_on_ingest_emitters(),
+                  query=index_recipe_on_ingest_queries(
+                      get_recipe=queries.get_recipe,
+                  ),
+              ),
+          )
+  
+      engine.register_policy(
+          RecipeIngested,
+          resources.overrides.get("index_recipe_on_ingest", _index_recipe_on_ingest),
+          name="index_recipe_on_ingest",
+      )
+  
+      # Command handlers: a procedure's emits are EVENTS, appended.
+      def _extract_and_transform_recipe(command: Any) -> None:
+          extract_and_transform_recipe(
+              extract_and_transform_recipe_context(
+                  emit=extract_and_transform_recipe_emitters(
+                      recipe_ingested=engine.emit_event,
+                  ),
+                  query=extract_and_transform_recipe_queries(
+                      get_recipe_text=queries.get_recipe_text,
+                  ),
+              ),
+              command,
+          )
+  
+      engine.register_procedure(
+          IngestRecipeText,
+          resources.overrides.get("extract_and_transform_recipe", _extract_and_transform_recipe),
+          name="extract_and_transform_recipe",
+      )
+  
+      return engine
+  
+  FEAT_FILE = Path(__file__).parent / "recipe.feat.yaml"
+  """The feature-file this wiring was generated from, shipped inside the
+  package so a lifted-out ``lib/`` stays self-contained. It is a build
+  artifact: regenerating the wiring refreshes it."""
+  
+  
+  def feat_graph() -> FeatGraph:
+      """This feature's topology, every declared name resolved to its class."""
+      return FeatGraph.load(FEAT_FILE)
+  
+  
+  def build_runtime(
+      services: ShellServices,
+      resources: Resources,
+      store: EventStore | None = None,
+      commit: Callable[[], None] | None = None,
+      session: Any = None,
+      refresh: Callable[[], None] = lambda: None,
+  ) -> Runtime:
+      """Build this process's engine around the services a shell provides.
+  
+      The shell's observer is chained in, not replaced: a shell collects the
+      events a command emitted through it, so an app that installs its own
+      observer without chaining silently unplugs the shell."""
+      engine = build_engine(
+          services.command_queue,
+          store if store is not None else EventStore(graph=feat_graph()),
+          resources,
+          observer=services.observer,
+          commit=commit,
+      )
+      return Runtime(engine=engine, session=session, refresh=refresh)
+  
+  
+  def host_app(
+      build: Callable[[ShellServices], Runtime],
+      **kwargs: Any,
+  ) -> HostApp:
+      """Package a runtime builder as the HostApp a shell resolves from
+      ``$DIZZY_HOST_APP``. *build* is usually ``build_runtime`` with this host's
+      resources already bound::
+  
+          app = host_app(lambda services: build_runtime(services, my_resources()))
+  
+      Extra keyword arguments (``routes``, ``otel``, ``on_command_done``, …) pass
+      straight through to ``HostApp``."""
+      return HostApp(graph=feat_graph(), build_runtime=build, **kwargs)
+  
+  '''
+# ---
+# name: test_render_wiring_with_env_and_telemetry_snapshot
+  '''
+  # AUTO-GENERATED — do not edit. Regenerate with `dizzy generate wiring`.
+  """Wiring for the agent feature: elements bound to a DIZZY engine.
+  
+  Generated from agent.feat.yaml. Every registration below is a line of that file read
+  back out, which is why editing this module is the wrong move — the next
+  regeneration discards it. To specialize one element's binding, pass an override:
+  
+      build_engine(queue, store, Resources(adapters=..., overrides={"run_agent_turn": my_runner}))
+  
+  The wiring is engine-mediated. A procedure's emitters go to ``engine.emit_event``
+  and a policy's to ``engine.dispatch_command``, so no element ever calls another;
+  the engine appends each event, folds its projections, commits, and only then lets
+  policies dispatch. A dispatched command lands on the queue as the next unit of
+  work — draining that queue is the scheduling shell's job, not this module's.
+  """
+  
+  from __future__ import annotations
+  
+  from collections.abc import Callable, Mapping
+  from dataclasses import dataclass, field
+  from pathlib import Path
+  from typing import Any
+  
+  from dizzy.engine import (
+      Engine,
+      EventStore,
+      FeatGraph,
+      HostApp,
+      Runtime,
+      ShellServices,
+  )
+  
+  from gen_def.pydantic.commands import (
+      SendMessage,
+  )
+  from gen_def.pydantic.events import (
+      AgentReplied,
+      UserMessageSent,
+  )
+  from gen_int.python.adapters.sqla import SqlaAdapter
+  from gen_int.python.procedure.run_agent_turn_context import (
+      run_agent_turn_context,
+      run_agent_turn_emitters,
+      run_agent_turn_queries,
+      run_agent_turn_env,
+      run_agent_turn_telemetry,
+  )
+  from gen_int.python.policy.notify_on_reply_context import (
+      notify_on_reply_context,
+      notify_on_reply_emitters,
+      notify_on_reply_env,
+      notify_on_reply_telemetry,
+  )
+  from gen_int.python.projection.conversation_log_projection import (
+      conversation_log_context,
+      conversation_log_env,
+      conversation_log_telemetry,
+  )
+  from gen_int.python.query.get_conversation import (
+      get_conversation_context,
+      get_conversation_env,
+      get_conversation_telemetry,
+  )
+  
+  # The element implementations — each is its own workspace package.
+  from run_agent_turn import run_agent_turn
+  from notify_on_reply import notify_on_reply
+  from conversation_log import conversation_log
+  from get_conversation import get_conversation
+  
+  @dataclass
+  class Resources:
+      """What a host supplies so the declared elements can actually run."""
+  
+      adapters: Mapping[str, Any] = field(default_factory=dict)
+      """Adapter instances by name: ``sqla``."""
+  
+      env: Any = None
+      """An object with one attribute per declared environment entry (``model``)."""
+  
+      telemetry: Any = None
+      """An object with one attribute per declared telemetry sink (``stream_chunk``)."""
+  
+      overrides: Mapping[str, Callable] = field(default_factory=dict)
+      """Element name -> replacement runner. The supported way to specialize a
+      binding: a capability-pooled element a node must not import, a query that
+      needs a short-lived session. Forking this module to get the same effect
+      throws away the guarantee that it matches the feat."""
+  
+      adapter_for: Callable[[str, Any], Any] | None = None
+      """Optional per-call adapter factory, ``(adapter_name, ingested_at) ->
+      adapter``. Supply it when a projection must see the event's stream-append
+      time; otherwise the static instance from ``adapters`` is used for every
+      fold."""
+  
+      def adapter(self, name: str, ingested_at: Any = None) -> Any:
+          if self.adapter_for is not None:
+              return self.adapter_for(name, ingested_at)
+          return self.adapters[name]
+  
+  @dataclass
+  class Queries:
+      """Every declared query, bound to the read adapter.
+  
+      Procedures and policies receive these through their generated context, so
+      a query is called with its input alone — the adapter is already bound."""
+  
+      get_conversation: Callable[[Any], Any]
+  
+  
+  def build_queries(resources: Resources) -> Queries:
+      """Bind every querier over the read adapter its model declares."""
+      def _get_conversation(inp: Any) -> Any:
+          return get_conversation(
+              inp,
+              get_conversation_context(
+                  adapter=resources.adapter("sqla"),
+                  env=get_conversation_env(
+                      model=resources.env.model,
+                  ),
+                  telemetry=get_conversation_telemetry(
+                      stream_chunk=resources.telemetry.stream_chunk,
+                  ),
+              ),
+          )
+  
+      return Queries(
+          get_conversation=resources.overrides.get("get_conversation", _get_conversation),
+      )
+  
+  def build_projection_runners(
+      resources: Resources,
+  ) -> dict[type, list[tuple[str, Callable]]]:
+      """Event class -> ``[(name, runner)]``, the shape the engine registers.
+  
+      The same map drives ``dizzy.engine.rebuild.rebuild`` and
+      ``replicate.fold_envelopes``, so one registration serves all three
+      triggers and a refold cannot fold a different set than the engine."""
+      def _conversation_log(event: Any, ingested_at: Any = None) -> None:
+          conversation_log(
+              event,
+              conversation_log_context(
+                  adapter=resources.adapter("sqla", ingested_at),
+                  env=conversation_log_env(
+                      model=resources.env.model,
+                  ),
+                  telemetry=conversation_log_telemetry(
+                      stream_chunk=resources.telemetry.stream_chunk,
+                  ),
+              ),
+          )
+  
+      runners: dict[type, list[tuple[str, Callable]]] = {}
+      runners.setdefault(UserMessageSent, []).append(("conversation_log", resources.overrides.get("conversation_log", _conversation_log)))
+      return runners
+  
+  def build_engine(
+      command_queue: Any,
+      store: EventStore,
+      resources: Resources,
+      observer: Callable[[str, Any], None] | None = None,
+      commit: Callable[[], None] | None = None,
+      bus: Callable[[dict], None] | None = None,
+      otel: Any = None,
+  ) -> Engine:
+      """Register every declared element and return the engine.
+  
+      *command_queue* is the shell's: dispatches leave through it, and draining
+      it is the shell's job. *commit* is the read-model transaction boundary the
+      engine owns — it fires once per event, after the fold, before policies."""
+      engine = Engine(
+          command_queue=command_queue,
+          store=store,
+          observer=observer,
+          commit=commit,
+          bus=bus,
+          otel=otel,
+      )
+      queries = build_queries(resources)
+  
+      # Data loop: one registration per declared event: projection edge.
+      for event_class, runners in build_projection_runners(resources).items():
+          for name, runner in runners:
+              engine.register_projection(event_class, runner, name=name)
+  
+      # Reactivity loop: a policy's emits are COMMANDS, dispatched.
+      def _notify_on_reply(event: Any) -> None:
+          notify_on_reply(
+              event,
+              notify_on_reply_context(
+                  emit=notify_on_reply_emitters(
+                      send_message=engine.dispatch_command,
+                  ),
+                  env=notify_on_reply_env(
+                      model=resources.env.model,
+                  ),
+                  telemetry=notify_on_reply_telemetry(
+                      stream_chunk=resources.telemetry.stream_chunk,
+                  ),
+              ),
+          )
+  
+      engine.register_policy(
+          AgentReplied,
+          resources.overrides.get("notify_on_reply", _notify_on_reply),
+          name="notify_on_reply",
+      )
+  
+      # Command handlers: a procedure's emits are EVENTS, appended.
+      def _run_agent_turn(command: Any) -> None:
+          run_agent_turn(
+              run_agent_turn_context(
+                  emit=run_agent_turn_emitters(
+                      user_message_sent=engine.emit_event,
+                      agent_replied=engine.emit_event,
+                  ),
+                  query=run_agent_turn_queries(
+                      get_conversation=queries.get_conversation,
+                  ),
+                  env=run_agent_turn_env(
+                      model=resources.env.model,
+                  ),
+                  telemetry=run_agent_turn_telemetry(
+                      stream_chunk=resources.telemetry.stream_chunk,
+                  ),
+              ),
+              command,
+          )
+  
+      engine.register_procedure(
+          SendMessage,
+          resources.overrides.get("run_agent_turn", _run_agent_turn),
+          name="run_agent_turn",
+      )
+  
+      return engine
+  
+  FEAT_FILE = Path(__file__).parent / "agent.feat.yaml"
+  """The feature-file this wiring was generated from, shipped inside the
+  package so a lifted-out ``lib/`` stays self-contained. It is a build
+  artifact: regenerating the wiring refreshes it."""
+  
+  
+  def feat_graph() -> FeatGraph:
+      """This feature's topology, every declared name resolved to its class."""
+      return FeatGraph.load(FEAT_FILE)
+  
+  
+  def build_runtime(
+      services: ShellServices,
+      resources: Resources,
+      store: EventStore | None = None,
+      commit: Callable[[], None] | None = None,
+      session: Any = None,
+      refresh: Callable[[], None] = lambda: None,
+  ) -> Runtime:
+      """Build this process's engine around the services a shell provides.
+  
+      The shell's observer is chained in, not replaced: a shell collects the
+      events a command emitted through it, so an app that installs its own
+      observer without chaining silently unplugs the shell."""
+      engine = build_engine(
+          services.command_queue,
+          store if store is not None else EventStore(graph=feat_graph()),
+          resources,
+          observer=services.observer,
+          commit=commit,
+      )
+      return Runtime(engine=engine, session=session, refresh=refresh)
+  
+  
+  def host_app(
+      build: Callable[[ShellServices], Runtime],
+      **kwargs: Any,
+  ) -> HostApp:
+      """Package a runtime builder as the HostApp a shell resolves from
+      ``$DIZZY_HOST_APP``. *build* is usually ``build_runtime`` with this host's
+      resources already bound::
+  
+          app = host_app(lambda services: build_runtime(services, my_resources()))
+  
+      Extra keyword arguments (``routes``, ``otel``, ``on_command_done``, …) pass
+      straight through to ``HostApp``."""
+      return HostApp(graph=feat_graph(), build_runtime=build, **kwargs)
+  
+  '''
+# ---

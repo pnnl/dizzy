@@ -106,14 +106,12 @@ inside that environment — from the repository root:
 
 ```bash
 uv sync --project examples/recipes/lib/python-uv
-uv run --project examples/recipes/lib/python-uv --with-editable . \
-    python examples/recipes/demo.py
+uv run --project examples/recipes/lib/python-uv python examples/recipes/demo.py
 ```
 
-`kitchen.py` runs the feature on `dizzy.engine` (the runtime kit), so the host
-needs DIZZY installed alongside the generated packages. `--with-editable .` uses
-this checkout; outside the repository it is `--with dizzy`. The generated
-workspace itself stays untouched either way.
+The generated `wiring` package depends on DIZZY (it is the artifact that imports
+`dizzy.engine`), and this workspace resolves that against the checkout it was
+generated from — so the runtime arrives with the sync, no extra flags.
 
 Expected output (abridged):
 
@@ -142,9 +140,10 @@ Provenance of the croutons (trace_provenance):
 
 `server.py` is a second host: a thin [FastAPI](https://fastapi.tiangolo.com/) layer
 over the same wiring. `demo.py` and `server.py` both build a `Kitchen` from
-[`kitchen.py`](kitchen.py) — the shared host wiring, which registers every element
-with a `dizzy.engine` `Engine` — so the feature behaves identically whether driven
-from the CLI or over HTTP.
+[`kitchen.py`](kitchen.py) — a thin host over the **generated** wiring in
+`lib/python-uv/wiring/`, which is what registers every element with a `dizzy.engine`
+`Engine` — so the feature behaves identically whether driven from the CLI or over
+HTTP.
 
 The generated Pydantic command/query models *are* the API contract: each command is a
 `POST` whose body is the generated command model and whose response is the list of
@@ -157,7 +156,7 @@ generated workspace stays untouched — from the repository root:
 
 ```bash
 uv run --project examples/recipes/lib/python-uv \
-    --with-editable . --with fastapi --with "uvicorn[standard]" \
+    --with fastapi --with "uvicorn[standard]" \
     python examples/recipes/server.py
 ```
 
@@ -246,8 +245,14 @@ uv run dizzy generate libraries examples/recipes/recipes.feat.yaml examples/reci
 # 5. (human step) implement the src/ stubs in lib/python-uv/<kind>/<name>/src/
 #    — see the committed files here, especially procedure/run_batch/ and
 #      policy/advance_ready_batches/
+
+# 6. generate the wiring: the binding from those elements to the runtime.
+#    --dizzy-source points the generated package's dizzy dependency at this
+#    checkout; a project depending on a released DIZZY omits it.
+uv run dizzy generate wiring examples/recipes/recipes.feat.yaml examples/recipes \
+    --dizzy-source ../../../..
 ```
 
-For the minimal feature and the full three-stage workflow, start with
+For the minimal feature and the full four-stage workflow, start with
 [`guestbook/`](../guestbook/); for a single policy that queries, see
 [`library/`](../library/). Then `dizzy docs authoring`.

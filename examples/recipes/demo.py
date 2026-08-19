@@ -18,16 +18,13 @@ then to the advance_ready_batches policy (reactivity loop), which dispatches
 advance_batch for whichever batch was waiting. So finishing the starter cascades
 through the loaf and into the croutons from a single trigger.
 
-Run inside the workspace environment, layering in the DIZZY runtime kit so the
-generated workspace stays untouched (from the repo root):
+Run inside the workspace environment (from the repo root):
 
     uv sync --project examples/recipes/lib/python-uv
-    uv run --project examples/recipes/lib/python-uv --with-editable . \
-        python examples/recipes/demo.py
+    uv run --project examples/recipes/lib/python-uv python examples/recipes/demo.py
 
-``kitchen.py`` runs the feature on ``dizzy.engine``, so the host needs DIZZY
-itself installed alongside the generated packages. Outside this repository that
-is ``--with dizzy``.
+The generated ``wiring`` package depends on DIZZY, and the workspace resolves that
+against this checkout, so the runtime comes in with the sync.
 """
 
 from typing import Any
