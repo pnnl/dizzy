@@ -1,7 +1,8 @@
 """The multiprocess engine's scheduling shell — Dramatiq/Redis workers, pool-routed.
 
 ``dizzy.engine.mp`` — a scheduling shell around an app it knows nothing about.
-Install it with the extra that carries its broker: ``pip install dizzy[mp]``.
+Install it with the extra that carries its broker — DIZZY is not on a package
+index, so name the source: ``dizzy[mp] @ git+https://github.com/PNNL/dizzy``.
 
 Same library, different engine: the app's ``build_engine`` is reused
 verbatim; the only difference is what's passed in — a command queue whose

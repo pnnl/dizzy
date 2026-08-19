@@ -9,6 +9,7 @@ break a running feature are asserted by name.
 import ast
 
 import pytest
+from dizzy.generators.lib_python_uv import _dizzy_source_entry
 from dizzy.generators.wiring import (
     feat_name,
     render_wiring,
@@ -132,3 +133,42 @@ def test_the_wiring_package_depends_on_dizzy_and_on_every_element(recipe_feat):
         assert f'"procedure-{proc.name}",' in out
     for proj in recipe_feat.projections or []:
         assert f'"projection-{proj.name}",' in out
+
+
+# ── Where DIZZY comes from ──────────────────────────────────────────────────
+#
+# DIZZY is not published to a package index, and the name there belongs to an
+# unrelated project — so "resolve it however pip likes" is not an option. Every
+# generated workspace names a source explicitly.
+
+
+def test_the_default_source_is_the_canonical_repository():
+    assert _dizzy_source_entry(None) == 'dizzy = { git = "https://github.com/PNNL/dizzy" }'
+
+
+def test_a_path_becomes_an_editable_checkout():
+    assert _dizzy_source_entry("../../../..") == (
+        'dizzy = { path = "../../../..", editable = true }'
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "https://github.com/PNNL/dizzy",
+        "git+https://github.com/PNNL/dizzy",
+        "ssh://git@github.com/PNNL/dizzy",
+    ],
+)
+def test_a_url_becomes_a_git_source(spec):
+    entry = _dizzy_source_entry(spec)
+    assert entry.startswith("dizzy = { git = ")
+    assert "git+" not in entry  # uv wants the bare URL
+
+
+def test_the_wiring_manifest_leaves_the_source_to_the_workspace_root(recipe_feat):
+    """The package declares the dependency; the workspace says where it comes
+    from. That keeps this manifest identical wherever the lib is shipped."""
+    out = render_wiring_pyproject_toml(recipe_feat)
+    assert '"dizzy",' in out
+    assert "dizzy = {" not in out

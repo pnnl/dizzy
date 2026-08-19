@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from click.exceptions import Exit as ClickExit
-from dizzy.cli import DOC_PAGES, app, def_cmd, gen, lib
+from dizzy.cli import DOC_PAGES, app, def_cmd, gen, lib, wiring
 from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -267,6 +267,70 @@ def test_lib_python_uv_structure(tmp_path: Path) -> None:
     assert '"gen_int",' in element
     assert "gen_def = { workspace = true }" in element
     assert (proc_base / "src" / "extract_and_transform_recipe.py").exists()
+
+
+def test_wiring_stage_emits_a_workspace_package(tmp_path: Path) -> None:
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+
+    base = tmp_path / "lib" / "python-uv"
+    # `libraries` must NOT list wiring: a member that does not exist yet makes the
+    # whole workspace unresolvable.
+    assert '"wiring",' not in (base / "pyproject.toml").read_text()
+
+    wiring(
+        feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+        output_dir=tmp_path,
+        dizzy_source=None,  # typer defaults only apply through the CLI
+    )
+
+    assert (base / "wiring" / "src" / "wiring.py").exists()
+    # The feat travels with the package, so a lifted-out lib/ can read its topology.
+    assert (base / "wiring" / "src" / "recipe.feat.yaml").exists()
+    workspace = (base / "pyproject.toml").read_text()
+    assert '"wiring",' in workspace
+
+
+def test_the_generated_workspace_names_where_dizzy_comes_from(tmp_path: Path) -> None:
+    """DIZZY is not on a package index — the name there is an unrelated project —
+    so a generated workspace must always name a source for it."""
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    wiring(
+        feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+        output_dir=tmp_path,
+        dizzy_source=None,  # typer defaults only apply through the CLI
+    )
+
+    workspace = (tmp_path / "lib" / "python-uv" / "pyproject.toml").read_text()
+    assert "[tool.uv.sources]" in workspace
+    assert 'dizzy = { git = "https://github.com/PNNL/dizzy" }' in workspace
+
+
+def test_dizzy_source_can_point_at_a_checkout(tmp_path: Path) -> None:
+    """The usual case when the generated lib lives inside the repo that made it."""
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    wiring(
+        feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+        output_dir=tmp_path,
+        dizzy_source="../../../..",
+    )
+
+    workspace = (tmp_path / "lib" / "python-uv" / "pyproject.toml").read_text()
+    assert 'dizzy = { path = "../../../..", editable = true }' in workspace
 
 
 def test_lib_rust_cargo_structure(tmp_path: Path) -> None:

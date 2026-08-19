@@ -33,22 +33,33 @@ If and when built for DIZZY, each additional system applies to all DIZZY librari
 Requires **Python 3.11+**, [uv](https://docs.astral.sh/uv/), and (optionally)
 [just](https://github.com/casey/just).
 
+**DIZZY is not published to a package index.** Install it from a checkout or
+straight from git — `uv add dizzy` would fetch an unrelated project that happens
+to share the name.
+
+From a clone:
+
 ```bash
 uv tool install --editable ".[gen]"   # or: just install
 dizzy --help
 ```
 
+As a dependency of your own project, naming the source explicitly:
+
+```bash
+uv add "dizzy[gen] @ git+https://github.com/PNNL/dizzy"   # authoring: the CLI and every generator
+uv add "dizzy[mp]  @ git+https://github.com/PNNL/dizzy"   # running a fleet: the Dramatiq/Redis shell
+uv add "dizzy      @ git+https://github.com/PNNL/dizzy"   # the engine layer alone
+```
+
+Pin a release by appending a tag (`...dizzy@v0.2.0`); tagged builds are attached
+to [GitHub Releases](https://github.com/PNNL/dizzy/releases) as wheels.
+
 The `gen` extra carries the generator (LinkML, the CLI) and is what authoring
 needs. It is an extra rather than a core dependency because DIZZY also ships a
 **runtime**: `dizzy.engine` schedules a generated feature, and a worker process
 that installs DIZZY for a scheduling shell should not inherit a code generator
-it will never call. Pick what you need:
-
-```bash
-uv add "dizzy[gen]"   # authoring: the CLI and every generator
-uv add "dizzy[mp]"    # running a fleet: the Dramatiq/Redis shell
-uv add dizzy          # the engine layer alone (pyyaml, nothing else)
-```
+it will never call.
 
 ## The model
 

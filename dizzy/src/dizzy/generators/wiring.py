@@ -563,6 +563,13 @@ def render_wiring_pyproject_toml(feat: FeatureDefinition) -> str:
     This is the one generated package that depends on DIZZY itself: the elements
     import only their contracts, but the wiring imports ``dizzy.engine`` — it is
     what binds them to a runtime.
+
+    The ``dizzy`` requirement is deliberately left un-sourced here. DIZZY is not
+    published to a package index, so it needs a source — but that belongs at the
+    workspace ROOT (see ``render_workspace_pyproject_toml``), where it applies to
+    every member and can be pointed at a checkout or a git URL without rewriting
+    this file. Keeping it out means this manifest is the same wherever the lib is
+    shipped.
     """
     elements = (
         [("procedure", p.name) for p in feat.procedures or []]

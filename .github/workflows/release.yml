@@ -4,7 +4,13 @@ name: Release
 #   git tag v0.2.0 && git push origin v0.2.0
 #
 # This builds the sdist + wheel and attaches them to a GitHub Release.
-# (Publishing to a package index is intentionally out of scope for now.)
+#
+# DIZZY is NOT published to a package index, by decision — the GitHub Release
+# and the git repository are the distribution. Dependents name the source
+# explicitly (`dizzy[gen] @ git+https://github.com/PNNL/dizzy`), and generated
+# workspaces do the same via `dizzy generate wiring --dizzy-source`. Note that
+# the name `dizzy` on PyPI belongs to an unrelated project, so a bare
+# requirement resolves to the wrong package.
 on:
   push:
     tags:

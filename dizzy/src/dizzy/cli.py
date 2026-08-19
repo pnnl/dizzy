@@ -361,12 +361,13 @@ def lib(
 def wiring(
     feat_file: Path = typer.Argument(..., help="Path to the .feat.yaml file"),
     output_dir: Path = typer.Argument(..., help="Output directory (must contain libconfig.yaml)"),
-    dizzy_source: str = typer.Option(
+    dizzy_source: str | None = typer.Option(
         None,
         "--dizzy-source",
         help=(
-            "Resolve the wiring package's dizzy dependency against a local checkout "
-            "at this path (relative to lib/<runtime>/), instead of an index."
+            "Where the generated workspace gets DIZZY: a checkout path (relative to "
+            "lib/<runtime>/) or a git URL. DIZZY is not published to a package index, "
+            "so this defaults to the canonical repository."
         ),
     ),
 ) -> None:

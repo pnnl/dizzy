@@ -20,8 +20,9 @@ dynamic = ["version"]
 # all it costs. The generator's tree (linkml, openai, typer) moved behind the
 # `gen` extra when the engine shells landed here: a worker process installs
 # dizzy to get a scheduling shell, and must not inherit a code generator it
-# will never call. `pip install dizzy[gen]` is the authoring install and what
-# the `dizzy` CLI needs; `just install` uses it.
+# will never call. The `gen` extra is the authoring install and what the `dizzy`
+# CLI needs; `just install` uses it. DIZZY is not published to a package index,
+# so a dependent names the source: `dizzy[gen] @ git+https://github.com/PNNL/dizzy`.
 dependencies = [
     "pyyaml>=6.0",
     # The event store round-trips events through the generated pydantic

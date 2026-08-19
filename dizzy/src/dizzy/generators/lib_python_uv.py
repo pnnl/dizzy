@@ -46,6 +46,29 @@ def render_element_pyproject_toml(kind: str, name: str) -> str:
 # Type packages emitted by `dizzy gen`; listed first so they resolve as workspace deps.
 _TYPE_PACKAGE_MEMBERS = ["gen_def", "gen_int"]
 
+DIZZY_GIT_URL = "https://github.com/PNNL/dizzy"
+"""Where a generated workspace gets DIZZY from.
+
+**DIZZY is not published to a package index, by decision.** A bare ``dizzy``
+requirement would resolve to an unrelated project of the same name, so the
+generated workspace always names a source explicitly — git by default, or a
+local checkout via ``--dizzy-source``.
+"""
+
+
+def _dizzy_source_entry(spec: str | None) -> str:
+    """Render the ``[tool.uv.sources]`` value for the DIZZY dependency.
+
+    A *spec* that looks like a URL becomes a git source; anything else is taken
+    as a path to a checkout (relative to this manifest) and made editable, which
+    is what a lib generated inside the DIZZY repo itself wants.
+    """
+    if spec is None:
+        return f'dizzy = {{ git = "{DIZZY_GIT_URL}" }}'
+    if spec.startswith(("http://", "https://", "git+", "ssh://", "git@")):
+        return f'dizzy = {{ git = "{spec.removeprefix("git+")}" }}'
+    return f'dizzy = {{ path = "{spec}", editable = true }}'
+
 
 def render_workspace_pyproject_toml(
     members: list[tuple[str, str]],
@@ -56,11 +79,14 @@ def render_workspace_pyproject_toml(
 
     *include_wiring* adds the generated wiring package, which `dizzy generate
     wiring` emits as a fourth stage. It is opt-in because listing a member that
-    has not been generated makes the whole workspace unresolvable.
+    has not been generated makes the whole workspace unresolvable. It also
+    brings the DIZZY dependency with it, so the source below is written only
+    alongside the package that actually needs it.
 
-    *dizzy_source* resolves the wiring package's dependency on DIZZY against a
-    local checkout instead of an index — the usual case when the generated lib
-    lives inside the repository that generated it.
+    *dizzy_source* overrides where DIZZY comes from: a checkout path (the usual
+    case when the generated lib lives inside the repository that generated it)
+    or a git URL. The default is the canonical repository, because DIZZY is not
+    published to an index.
     """
     all_members = _TYPE_PACKAGE_MEMBERS + [f"{kind}/{name}" for kind, name in members]
     if include_wiring:
@@ -73,13 +99,13 @@ def render_workspace_pyproject_toml(
         "]",
         "",
     ]
-    if dizzy_source:
-        # The wiring package depends on DIZZY itself. Point that at a checkout
-        # when the workspace lives inside (or beside) one — a workspace-root
-        # source applies to every member, so the wiring manifest stays portable.
+    if include_wiring:
+        # The wiring package is the one that depends on DIZZY itself. The source
+        # goes at the workspace ROOT so it applies to every member, which keeps
+        # the wiring package's own manifest portable.
         lines += [
             "[tool.uv.sources]",
-            f'dizzy = {{ path = "{dizzy_source}", editable = true }}',
+            _dizzy_source_entry(dizzy_source),
             "",
         ]
     return "\n".join(lines)

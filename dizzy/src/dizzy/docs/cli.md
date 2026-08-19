@@ -87,6 +87,13 @@ Emit the binding between the generated elements and the runtime (`dizzy.engine`)
 the `HostApp` a scheduling shell resolves from `$DIZZY_HOST_APP`. Requires the element
 packages; run `libraries` first.
 
+This is the only generated package that depends on DIZZY itself, and **DIZZY is not
+published to a package index** — the name there belongs to an unrelated project. So the
+stage also writes a `[tool.uv.sources]` entry at the workspace root naming where DIZZY
+comes from: the canonical repository by default, or `--dizzy-source <path|git-url>` to
+override (a checkout path is the usual choice when the generated lib lives inside the
+repository that generated it).
+
 **Wiring is a pure function of the feature-file, which is why it is generated.** The feat
 already declares, per element, exactly the argument list of its generated context: a
 procedure's `command:` gives the command it registers under, its `emits:` the emitter
