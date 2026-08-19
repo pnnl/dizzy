@@ -52,7 +52,6 @@ from gen_def.pydantic.events import (
     StepInputAdded,
     ToolRegistered,
 )
-from gen_int.python.adapters.sqla import SqlaAdapter
 from gen_int.python.procedure.record_ingredient_context import (
     record_ingredient_context,
     record_ingredient_emitters,

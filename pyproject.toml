@@ -67,7 +67,7 @@ dizzy = "dizzy.cli:main"
 
 [dependency-groups]
 dev = [
-    "dizzy[gen,mp,st]",
+    "dizzy[gen,mp,sqla,st]",
     "pytest>=8.4.2",
     "syrupy>=4.0",
     # dagstore's convergence property is property-tested, not example-tested:

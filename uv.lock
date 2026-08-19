@@ -334,7 +334,7 @@ sqla = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "dizzy", extra = ["gen", "mp"] },
+    { name = "dizzy", extra = ["gen", "mp", "sqla"] },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "ruff" },
@@ -375,7 +375,7 @@ provides-extras = ["all", "gen", "mp", "sqla", "st"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "dizzy", extras = ["gen", "mp", "st"] },
+    { name = "dizzy", extras = ["gen", "mp", "sqla", "st"] },
     { name = "hypothesis", specifier = ">=6" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.9" },

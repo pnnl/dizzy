@@ -117,19 +117,6 @@ class Engine:
         """
         return dict(self._projections)
 
-    def registered(self) -> dict[str, set[str]]:
-        """What this engine actually has wired, per topology section.
-
-        Feeds :meth:`FeatGraph.validate_registered
-        <dizzy.engine.registry.FeatGraph.validate_registered>` — the check that
-        an app wired exactly what its feat declares.
-        """
-        return {
-            "procedures": {n for n, _ in self._procedures.values()},
-            "projections": {n for rs in self._projections.values() for n, _ in rs},
-            "policies": {n for rs in self._policies.values() for n, _ in rs},
-        }
-
     # ── Emit closures handed to elements ────────────────────────────────────
 
     def emit_event(self, event: Any) -> None:

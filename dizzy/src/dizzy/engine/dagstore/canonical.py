@@ -68,10 +68,14 @@ def _serialize(value: Any, out: list[str]) -> None:
         out.append("]")
     elif isinstance(value, dict):
         out.append("{")
+        # Validating the keys and collecting them are the same act: the sort below
+        # keys on UTF-16 bytes, which only exists for a str.
+        keys: list[str] = []
         for key in value:
             if not isinstance(key, str):
                 raise NotCanonicalizable(f"object key {key!r} is not a string")
-        for i, key in enumerate(sorted(value, key=_utf16_key)):
+            keys.append(key)
+        for i, key in enumerate(sorted(keys, key=_utf16_key)):
             if i:
                 out.append(",")
             out.append(json.dumps(key, ensure_ascii=False))

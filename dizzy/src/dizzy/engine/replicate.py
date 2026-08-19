@@ -100,7 +100,18 @@ def file_transport(peer_store_path: str):
 
 
 def http_transport(base_url: str, client: Any = None):
-    """Speak to a peer serving :func:`make_app`.
+    """Speak to a peer over HTTP.
+
+    The peer serves two endpoints, which a host mounts in whatever framework it
+    already runs — DIZZY does not ship a server, and would have to pick one:
+
+    ``GET {base}/replicate/heads``
+        ``{"heads": [<event id>, ...]}`` — from :meth:`EventStore.heads`.
+
+    ``GET {base}/replicate/event/{id}``
+        ``{"id", "type", "parents", "payload"}`` — from
+        :meth:`EventStore.raw_event`, which returns exactly those fields.
+        404 when the id is unknown.
 
     *client* is injectable for tests — anything with ``.get(url)`` returning a
     response with ``.json()``. httpx is imported only if you do not supply one,
@@ -119,29 +130,3 @@ def http_transport(base_url: str, client: Any = None):
         return Event(id=d["id"], type=d["type"], parents=tuple(d["parents"]), payload=d["payload"])
 
     return fetch_heads, fetch_event
-
-
-def make_app(store: EventStore):
-    """A peer's replication surface: heads + fetch-by-id.
-
-    Mountable into a host's own server, or served standalone. FastAPI is
-    imported here rather than at module scope — a host that never replicates
-    over HTTP does not need it installed.
-    """
-    from fastapi import FastAPI, HTTPException
-
-    app = FastAPI(title="dizzy replication")
-
-    @app.get("/replicate/heads")
-    def heads():
-        return {"heads": list(store.heads())}
-
-    @app.get("/replicate/event/{event_id}")
-    def event(event_id: str):
-        try:
-            ev = store.raw_event(event_id)
-        except KeyError:
-            raise HTTPException(404, event_id) from None
-        return {"id": ev.id, "type": ev.type, "parents": list(ev.parents), "payload": ev.payload}
-
-    return app

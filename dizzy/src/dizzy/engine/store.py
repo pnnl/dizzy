@@ -74,16 +74,6 @@ class Envelope:
     seq: int = -1
     """DERIVED iteration index, not stored."""
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "type": self.type,
-            "ingested_at": self.ingested_at.isoformat(),
-            "payload": self.payload,
-            "parents": list(self.parents),
-            "seq": self.seq,
-        }
-
 
 def reconstruct_event(envelope: Envelope, event_classes: Mapping[str, type]) -> Any:
     """Rebuild the event instance an envelope stands for.

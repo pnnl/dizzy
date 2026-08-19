@@ -75,8 +75,6 @@
   from gen_def.pydantic.events import (
       RecipeIngested,
   )
-  from gen_int.python.adapters.relative_filesystem import RelativeFilesystemAdapter
-  from gen_int.python.adapters.sqla import SqlaAdapter
   from gen_int.python.procedure.extract_and_transform_recipe_context import (
       extract_and_transform_recipe_context,
       extract_and_transform_recipe_emitters,
@@ -348,7 +346,6 @@
       AgentReplied,
       UserMessageSent,
   )
-  from gen_int.python.adapters.sqla import SqlaAdapter
   from gen_int.python.procedure.run_agent_turn_context import (
       run_agent_turn_context,
       run_agent_turn_emitters,

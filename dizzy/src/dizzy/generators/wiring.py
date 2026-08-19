@@ -32,10 +32,6 @@ WIRING_PACKAGE = "wiring"
 """Workspace member name, and the importable module (``from wiring import ...``)."""
 
 
-def _adapter_class(adapter_name: str) -> str:
-    return "".join(word.capitalize() for word in adapter_name.split("_")) + "Adapter"
-
-
 def _call(name: str, args: list[list[str]], indent: str) -> list[str]:
     """Render ``name(...)`` across lines, one argument per line.
 
@@ -178,11 +174,9 @@ def _render_imports(feat: FeatureDefinition) -> list[str]:
         lines += [f"    {camelcase(e)}," for e in events]
         lines.append(")")
 
-    adapters = sorted(
-        {e.adapter for e in list(projections) + list(queries) if e.adapter is not None}
-    )
-    for adapter in adapters:
-        lines.append(f"from gen_int.python.adapters.{adapter} import {_adapter_class(adapter)}")
+    # No adapter imports: a context receives an adapter INSTANCE, which the host
+    # supplies and the wiring looks up by name (``resources.adapter("sqla")``).
+    # Importing the class would be an unused import in every generated module.
 
     for proc in procedures:
         names = [f"{proc.name}_context", f"{proc.name}_emitters"]

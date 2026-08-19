@@ -188,17 +188,6 @@ def test_discard_pending_events_stops_a_failure_leaking_into_the_next_command(en
     assert len(engine.store) == 0  # the failed command's event never appears
 
 
-def test_registered_reports_what_the_wiring_actually_wired(engine):
-    engine.register_procedure(DefineRecipe, lambda c: None, name="define_recipe")
-    engine.register_projection(RecipeDefined, lambda e, at: None, name="recipe_book")
-    engine.register_policy(RecipeDefined, lambda e: None, name="open_batch")
-    assert engine.registered() == {
-        "procedures": {"define_recipe"},
-        "projections": {"recipe_book"},
-        "policies": {"open_batch"},
-    }
-
-
 # ── Self-observation ────────────────────────────────────────────────────────
 
 
