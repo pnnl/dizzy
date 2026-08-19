@@ -18,4 +18,3 @@ def inventory_store(
             available=True,
         )
     )
-    context.adapter.session.commit()

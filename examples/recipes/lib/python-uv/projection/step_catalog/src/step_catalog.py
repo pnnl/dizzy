@@ -17,4 +17,3 @@ def step_catalog(
             tool_id=event.tool_id,
         )
     )
-    context.adapter.session.commit()

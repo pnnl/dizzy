@@ -13,4 +13,3 @@ def inventory_consumer(
     lot = session.get(InventoryEntity, event.entity_id)
     if lot is not None:
         lot.available = False
-        session.commit()

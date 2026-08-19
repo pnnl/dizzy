@@ -15,4 +15,3 @@ def ingredient_catalog(
             unit=event.unit,
         )
     )
-    context.adapter.session.commit()

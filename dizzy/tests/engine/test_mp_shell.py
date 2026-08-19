@@ -38,13 +38,18 @@ class RateRecipe(Command):
 
 
 class StubEngine:
+    """The public surface the shell uses — see dizzy.engine.loop.Engine."""
+
     def __init__(self):
         self.ran = []
-        self._events = []
+        self.pending = []
         self.current_event = None
 
     def run_command(self, command):
         self.ran.append(command)
+
+    def discard_pending_events(self):
+        self.pending.clear()
 
 
 @pytest.fixture
@@ -267,7 +272,7 @@ def test_a_failed_command_leaves_nothing_behind_for_the_next(mp):
 
     class Boom(StubEngine):
         def run_command(self, command):
-            self._events.append("half-done")
+            self.pending.append("half-done")
             raise ValueError("nope")
 
     engine = Boom()
@@ -281,5 +286,5 @@ def test_a_failed_command_leaves_nothing_behind_for_the_next(mp):
         on_command_done=lambda *a: True,
     )
     mp["shell"].run_command("record_recipe", "{}")
-    assert engine._events == []
+    assert engine.pending == []
     assert rolled_back["n"] == 1

@@ -1,21 +1,39 @@
 """Host wiring for the recipes feature, shared by every host that runs it.
 
 Dizzy generates the typed pieces (commands, events, procedures, projections,
-queries, the policy); a *host* owns the database and connects them: it routes
-each emitted event to its projections and to the policy, and binds each query
-over the read adapter. ``demo.py`` (a CLI host) and ``server.py`` (an HTTP host)
-both call :func:`build_kitchen` rather than repeat that wiring.
+queries, the policy) and :mod:`dizzy.engine` runs them; a *host* owns the
+database and connects the two. That connection is this file: it registers each
+element with the engine under the command or event the feat declares for it,
+and binds each query over the read adapter. ``demo.py`` (a CLI host) and
+``server.py`` (an HTTP host) both call :func:`build_kitchen` rather than repeat
+it.
 
-A :class:`Kitchen` is just a bundle of ready-to-call command runners and query
-callables, all bound to one ``SqlaAdapter`` (i.e. one database session). Build a
-fresh one per unit of work (per CLI run, per HTTP request).
+**Engine-mediated, not element-to-element.** Every emitted event goes to
+``engine.emit_event`` and every dispatched command to ``engine.dispatch_command``
+— no element calls another directly. That is what buys the ordering rule
+(projections fold and the read model commits BEFORE policies dispatch) and the
+event store, and it is what lets the same wiring run under either scheduling
+shell. A policy's command does not recurse into a procedure; it lands on the
+command queue and becomes the next unit of work.
+
+A :class:`Kitchen` is a bundle of ready-to-call command runners and query
+callables bound to one ``SqlaAdapter`` (i.e. one database session), plus the
+engine underneath. Build a fresh one per unit of work (per CLI run, per HTTP
+request). Calling a command runner runs it *to quiescence*: the command, then
+every event it causes, then every command those events dispatch — which is the
+single-threaded phased-queue semantics, with this file playing the part the
+scheduling shell plays in a deployed host.
 
 The optional ``observer`` is called with ``(event_name, event)`` for every event
 the feature emits — hosts use it to log, print, or collect the cascade.
 """
 
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
+
+from dizzy.engine import Engine, EventStore, FeatGraph
 
 from gen_def.pydantic.commands import (
     RegisterIngredient,
@@ -145,10 +163,47 @@ from list_batches import list_batches
 
 EventObserver = Callable[[str, Any], None]
 
+FEAT_PATH = Path(__file__).parent / "recipes.feat.yaml"
+"""This host names its own feat rather than letting the engine discover one.
+
+``FeatGraph`` otherwise walks up from the cwd, which finds whichever feat file
+is nearest — the wrong one, if this example is run from inside a larger repo.
+A deployed host has the same problem and the same fix.
+"""
+
+
+def feat_graph() -> FeatGraph:
+    """The recipes topology, with every declared name resolved to its class."""
+    return FeatGraph.load(FEAT_PATH)
+
+
+class CommandQueue:
+    """The external command queue, in-process.
+
+    A deployed host swaps this for a real one — ``dizzy.engine.st``'s durable
+    sqlite queue, or ``mp``'s broker — without the wiring below changing at
+    all, because the engine only ever calls ``put``.
+    """
+
+    def __init__(self) -> None:
+        self._items: deque = deque()
+
+    def put(self, command: Any, origin: str = "policy") -> None:
+        self._items.append(command)
+
+    def get(self) -> Any:
+        return self._items.popleft()
+
+    def qsize(self) -> int:
+        return len(self._items)
+
 
 @dataclass
 class Kitchen:
     """Command runners and query callables bound to one database session."""
+
+    # The engine underneath, for hosts that want the store or the topology.
+    engine: Engine
 
     # Commands (each runs a procedure; effects flow through events to projections).
     register_ingredient: Callable[[RegisterIngredient], None]
@@ -171,12 +226,29 @@ class Kitchen:
     list_batches: Callable[[ListBatchesInput], ListBatchesOutput]
 
 
-def build_kitchen(adapter: SqlaAdapter, observer: Optional[EventObserver] = None) -> Kitchen:
-    """Wire the feature over one read/write adapter and return a :class:`Kitchen`."""
+def build_kitchen(
+    adapter: SqlaAdapter,
+    observer: Optional[EventObserver] = None,
+    store: Optional[EventStore] = None,
+    command_queue: Optional[CommandQueue] = None,
+    commit: Optional[Callable[[], None]] = None,
+) -> Kitchen:
+    """Wire the feature over one read/write adapter and return a :class:`Kitchen`.
 
-    def note(name: str, event: Any) -> None:
-        if observer is not None:
-            observer(name, event)
+    *store* defaults to an in-memory event stream, so an example or a test gets
+    the real append-fold-dispatch path without leaving a file behind; a
+    deployed host passes one backed by a path. *commit* defaults to committing
+    the adapter's session once per event — the boundary the engine owns, which
+    is what makes fold-then-dispatch true for the next reader.
+    """
+    store = store if store is not None else EventStore(path=":memory:", graph=feat_graph())
+    queue = command_queue if command_queue is not None else CommandQueue()
+    engine = Engine(
+        command_queue=queue,
+        store=store,
+        observer=observer,
+        commit=commit if commit is not None else adapter.session.commit,
+    )
 
     # --- Queries, each bound to the read adapter ---
     def q_get_recipe(inp: GetRecipeInput) -> GetRecipeOutput:
@@ -206,118 +278,158 @@ def build_kitchen(adapter: SqlaAdapter, observer: Optional[EventObserver] = None
     def q_list_batches(inp: ListBatchesInput) -> ListBatchesOutput:
         return list_batches(inp, list_batches_context(adapter=adapter))
 
-    # --- Event routing (projections + the policy) ---
-    def on_ingredient_registered(e: IngredientRegistered) -> None:
-        ingredient_catalog(e, ingredient_catalog_context(adapter=adapter))
-        note("ingredient_registered", e)
-
-    def on_tool_registered(e: ToolRegistered) -> None:
-        tool_catalog(e, tool_catalog_context(adapter=adapter))
-        note("tool_registered", e)
-
-    def on_recipe_defined(e: RecipeDefined) -> None:
-        recipe_catalog(e, recipe_catalog_context(adapter=adapter))
-        note("recipe_defined", e)
-
-    def on_recipe_step_added(e: RecipeStepAdded) -> None:
-        step_catalog(e, step_catalog_context(adapter=adapter))
-        note("recipe_step_added", e)
-
-    def on_step_input_added(e: StepInputAdded) -> None:
-        step_input_catalog(e, step_input_catalog_context(adapter=adapter))
-        note("step_input_added", e)
-
-    def on_batch_opened(e: BatchOpened) -> None:
-        batch_store(e, batch_store_context(adapter=adapter))
-        note("batch_opened", e)
-
-    def on_batch_completed(e: BatchCompleted) -> None:
-        batch_finalizer(e, batch_finalizer_context(adapter=adapter))
-        note("batch_completed", e)
-
-    def on_batch_run_failed(e: BatchRunFailed) -> None:
-        batch_reblocker(e, batch_reblocker_context(adapter=adapter))
-        note("batch_run_failed", e)
-
-    def on_step_performed(e: StepPerformed) -> None:
-        note("step_performed", e)
-
-    def on_entity_consumed(e: EntityConsumed) -> None:
-        inventory_consumer(e, inventory_consumer_context(adapter=adapter))
-        note("entity_consumed", e)
-
-    def on_entity_derived(e: EntityDerived) -> None:
-        derivation_graph(e, derivation_graph_context(adapter=adapter))
-        note("entity_derived", e)
-
-    def on_entity_produced(e: EntityProduced) -> None:
-        # Data loop first: fold the fact into inventory + the provenance graph,
-        # so the read state is current before the policy queries it.
-        inventory_store(e, inventory_store_context(adapter=adapter))
-        generation_graph(e, generation_graph_context(adapter=adapter))
-        note("entity_produced", e)
-        # Reactivity loop: the policy decides what to advance next.
-        advance_ready_batches(
-            e,
-            advance_ready_batches_context(
-                emit=advance_ready_batches_emitters(advance_batch=dispatch_advance_batch),
-                query=advance_ready_batches_queries(
-                    find_blocked_batches=q_find_blocked_batches
-                ),
-            ),
+    # --- Projections: the data loop. One registration per event: projection
+    # edge the feat declares. The engine calls these with (event, ingested_at)
+    # after appending the event and before any policy sees it.
+    for event_type, projection, context, name in (
+        (IngredientRegistered, ingredient_catalog, ingredient_catalog_context,
+         "ingredient_catalog"),
+        (ToolRegistered, tool_catalog, tool_catalog_context, "tool_catalog"),
+        (RecipeDefined, recipe_catalog, recipe_catalog_context, "recipe_catalog"),
+        (RecipeStepAdded, step_catalog, step_catalog_context, "step_catalog"),
+        (StepInputAdded, step_input_catalog, step_input_catalog_context,
+         "step_input_catalog"),
+        (BatchOpened, batch_store, batch_store_context, "batch_store"),
+        (BatchCompleted, batch_finalizer, batch_finalizer_context, "batch_finalizer"),
+        (BatchRunFailed, batch_reblocker, batch_reblocker_context, "batch_reblocker"),
+        (EntityConsumed, inventory_consumer, inventory_consumer_context,
+         "inventory_consumer"),
+        (EntityProduced, inventory_store, inventory_store_context, "inventory_store"),
+        (EntityProduced, generation_graph, generation_graph_context, "generation_graph"),
+        (EntityDerived, derivation_graph, derivation_graph_context, "derivation_graph"),
+    ):
+        engine.register_projection(
+            event_type,
+            lambda event, ingested_at, p=projection, c=context: p(event, c(adapter=adapter)),
+            name=name,
         )
 
-    # --- Procedure contexts ---
-    record_ingredient_ctx = record_ingredient_context(
-        emit=record_ingredient_emitters(ingredient_registered=on_ingredient_registered)
-    )
-    record_tool_ctx = record_tool_context(
-        emit=record_tool_emitters(tool_registered=on_tool_registered)
-    )
-    record_recipe_ctx = record_recipe_context(
-        emit=record_recipe_emitters(recipe_defined=on_recipe_defined)
-    )
-    record_step_ctx = record_step_context(
-        emit=record_step_emitters(recipe_step_added=on_recipe_step_added)
-    )
-    record_step_input_ctx = record_step_input_context(
-        emit=record_step_input_emitters(step_input_added=on_step_input_added)
-    )
-    open_batch_ctx = open_batch_context(
-        emit=open_batch_emitters(batch_opened=on_batch_opened),
-        query=open_batch_queries(get_recipe=q_get_recipe, check_inventory=q_check_inventory),
-    )
-    run_batch_ctx = run_batch_context(
-        emit=run_batch_emitters(
-            step_performed=on_step_performed,
-            entity_consumed=on_entity_consumed,
-            entity_produced=on_entity_produced,
-            entity_derived=on_entity_derived,
-            batch_completed=on_batch_completed,
-            batch_run_failed=on_batch_run_failed,
+    # step_performed is declared but folds nowhere: it is a fact for the stream
+    # and for observers, not for a read model. The engine appends it regardless.
+
+    # --- Policy: the reactivity loop. Its dispatch goes to the engine, so the
+    # command lands on the queue instead of recursing into run_batch.
+    engine.register_policy(
+        EntityProduced,
+        lambda event: advance_ready_batches(
+            event,
+            advance_ready_batches_context(
+                emit=advance_ready_batches_emitters(
+                    advance_batch=engine.dispatch_command,
+                ),
+                query=advance_ready_batches_queries(
+                    find_blocked_batches=q_find_blocked_batches,
+                ),
+            ),
         ),
-        query=run_batch_queries(
-            get_batch=q_get_batch,
-            get_recipe=q_get_recipe,
-            get_recipe_steps=q_get_recipe_steps,
-            get_step_inputs=q_get_step_inputs,
-            check_inventory=q_check_inventory,
-        ),
+        name="advance_ready_batches",
     )
 
-    # advance_batch is dispatched both by callers and by the policy; the host
-    # routes it into run_batch, whose entity_produced re-triggers the policy.
-    def dispatch_advance_batch(command: AdvanceBatch) -> None:
-        run_batch(run_batch_ctx, command)
+    # --- Procedures. Every emitter is engine.emit_event: a procedure's output
+    # is a fact for the stream, and the engine decides what happens next.
+    engine.register_procedure(
+        RegisterIngredient,
+        lambda c: record_ingredient(
+            record_ingredient_context(
+                emit=record_ingredient_emitters(ingredient_registered=engine.emit_event)
+            ),
+            c,
+        ),
+        name="record_ingredient",
+    )
+    engine.register_procedure(
+        RegisterTool,
+        lambda c: record_tool(
+            record_tool_context(emit=record_tool_emitters(tool_registered=engine.emit_event)),
+            c,
+        ),
+        name="record_tool",
+    )
+    engine.register_procedure(
+        DefineRecipe,
+        lambda c: record_recipe(
+            record_recipe_context(emit=record_recipe_emitters(recipe_defined=engine.emit_event)),
+            c,
+        ),
+        name="record_recipe",
+    )
+    engine.register_procedure(
+        AddRecipeStep,
+        lambda c: record_step(
+            record_step_context(emit=record_step_emitters(recipe_step_added=engine.emit_event)),
+            c,
+        ),
+        name="record_step",
+    )
+    engine.register_procedure(
+        AddStepInput,
+        lambda c: record_step_input(
+            record_step_input_context(
+                emit=record_step_input_emitters(step_input_added=engine.emit_event)
+            ),
+            c,
+        ),
+        name="record_step_input",
+    )
+    engine.register_procedure(
+        StartBatch,
+        lambda c: open_batch(
+            open_batch_context(
+                emit=open_batch_emitters(batch_opened=engine.emit_event),
+                query=open_batch_queries(
+                    get_recipe=q_get_recipe, check_inventory=q_check_inventory
+                ),
+            ),
+            c,
+        ),
+        name="open_batch",
+    )
+    engine.register_procedure(
+        AdvanceBatch,
+        lambda c: run_batch(
+            run_batch_context(
+                emit=run_batch_emitters(
+                    step_performed=engine.emit_event,
+                    entity_consumed=engine.emit_event,
+                    entity_produced=engine.emit_event,
+                    entity_derived=engine.emit_event,
+                    batch_completed=engine.emit_event,
+                    batch_run_failed=engine.emit_event,
+                ),
+                query=run_batch_queries(
+                    get_batch=q_get_batch,
+                    get_recipe=q_get_recipe,
+                    get_recipe_steps=q_get_recipe_steps,
+                    get_step_inputs=q_get_step_inputs,
+                    check_inventory=q_check_inventory,
+                ),
+            ),
+            c,
+        ),
+        name="run_batch",
+    )
+
+    def run_to_quiescence(command: Any) -> None:
+        """Run one command, then every command its events dispatched.
+
+        The engine drains the EVENT queue itself; draining the COMMAND queue is
+        the scheduling shell's job, and in a single-process host like this one
+        that job is a while-loop. Under ``dizzy.engine.st`` it is a worker
+        claiming rows; under ``mp`` it is N processes. Same wiring either way.
+        """
+        engine.run_command(command)
+        while queue.qsize():
+            engine.run_command(queue.get())
 
     return Kitchen(
-        register_ingredient=lambda c: record_ingredient(record_ingredient_ctx, c),
-        register_tool=lambda c: record_tool(record_tool_ctx, c),
-        define_recipe=lambda c: record_recipe(record_recipe_ctx, c),
-        add_recipe_step=lambda c: record_step(record_step_ctx, c),
-        add_step_input=lambda c: record_step_input(record_step_input_ctx, c),
-        start_batch=lambda c: open_batch(open_batch_ctx, c),
-        advance_batch=dispatch_advance_batch,
+        engine=engine,
+        register_ingredient=run_to_quiescence,
+        register_tool=run_to_quiescence,
+        define_recipe=run_to_quiescence,
+        add_recipe_step=run_to_quiescence,
+        add_step_input=run_to_quiescence,
+        start_batch=run_to_quiescence,
+        advance_batch=run_to_quiescence,
         get_recipe=q_get_recipe,
         get_recipe_steps=q_get_recipe_steps,
         get_step_inputs=q_get_step_inputs,

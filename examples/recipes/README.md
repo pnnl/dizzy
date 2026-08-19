@@ -30,13 +30,18 @@ advance_batch(starter-1)
           advance_ready_batches ─▶ nobody waiting; cascade ends
 ```
 
-Each batch ends by emitting `entity_produced` (prov:wasGeneratedBy). The host folds
-that fact into the read models (the **data loop**), then hands it to the
-`advance_ready_batches` **policy** (the **reactivity loop**). The policy asks
-`find_blocked_batches` who was waiting for that entity type and dispatches
-`advance_batch` for each. A policy emits commands only, so the host routes
-`advance_batch` back into `run_batch`, whose next `entity_produced` re-triggers the
-policy — until nobody is waiting. The whole chain runs from one trigger.
+Each batch ends by emitting `entity_produced` (prov:wasGeneratedBy). The **engine**
+appends that fact to the event store, folds it into the read models (the **data
+loop**) and commits, and only then hands it to the `advance_ready_batches`
+**policy** (the **reactivity loop**) — so the policy always reads state that is
+already durable. The policy asks `find_blocked_batches` who was waiting for that
+entity type and dispatches `advance_batch` for each.
+
+A policy emits commands only, and a dispatched command does **not** recurse back
+into a procedure: it lands on the command queue and becomes the next unit of work,
+whose next `entity_produced` re-triggers the policy — until nobody is waiting. The
+whole chain runs from one trigger. That queue is the seam a scheduling shell owns,
+which is why the identical wiring runs single-process or across a worker fleet.
 
 ## Events that communicate relationships (W3C PROV-O)
 
@@ -101,8 +106,14 @@ inside that environment — from the repository root:
 
 ```bash
 uv sync --project examples/recipes/lib/python-uv
-uv run --project examples/recipes/lib/python-uv python examples/recipes/demo.py
+uv run --project examples/recipes/lib/python-uv --with-editable . \
+    python examples/recipes/demo.py
 ```
+
+`kitchen.py` runs the feature on `dizzy.engine` (the runtime kit), so the host
+needs DIZZY installed alongside the generated packages. `--with-editable .` uses
+this checkout; outside the repository it is `--with dizzy`. The generated
+workspace itself stays untouched either way.
 
 Expected output (abridged):
 
@@ -131,9 +142,9 @@ Provenance of the croutons (trace_provenance):
 
 `server.py` is a second host: a thin [FastAPI](https://fastapi.tiangolo.com/) layer
 over the same wiring. `demo.py` and `server.py` both build a `Kitchen` from
-[`kitchen.py`](kitchen.py) — the shared host wiring that owns event routing and the
-policy cascade — so the feature behaves identically whether driven from the CLI or
-over HTTP.
+[`kitchen.py`](kitchen.py) — the shared host wiring, which registers every element
+with a `dizzy.engine` `Engine` — so the feature behaves identically whether driven
+from the CLI or over HTTP.
 
 The generated Pydantic command/query models *are* the API contract: each command is a
 `POST` whose body is the generated command model and whose response is the list of
@@ -146,7 +157,7 @@ generated workspace stays untouched — from the repository root:
 
 ```bash
 uv run --project examples/recipes/lib/python-uv \
-    --with fastapi --with "uvicorn[standard]" \
+    --with-editable . --with fastapi --with "uvicorn[standard]" \
     python examples/recipes/server.py
 ```
 

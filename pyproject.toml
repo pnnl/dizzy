@@ -24,6 +24,12 @@ dynamic = ["version"]
 # the `dizzy` CLI needs; `just install` uses it.
 dependencies = [
     "pyyaml>=6.0",
+    # The event store round-trips events through the generated pydantic
+    # classes — model_dump on append, cls(**payload) on reconstruct — so the
+    # runtime cannot avoid it. No ORM here, though: the engine touches read
+    # models only through the runners the wiring registers, so sqlalchemy
+    # stays the app's dependency, not DIZZY's.
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -44,7 +50,11 @@ mp = [
     # host's (HostApp.otel), so a worker can run with tracing switched off.
     "opentelemetry-api>=1.27",
 ]
-all = ["dizzy[gen,mp,st]"]
+# Read models in SQLAlchemy. NOT needed by the engine — it reaches read models
+# only through the runners a wiring registers — so this buys the cache-management
+# conveniences in dizzy.engine.sqla, nothing more.
+sqla = ["sqlalchemy>=2.0"]
+all = ["dizzy[gen,mp,sqla,st]"]
 
 [project.urls]
 Homepage = "https://github.com/PNNL/dizzy"
@@ -59,6 +69,9 @@ dev = [
     "dizzy[gen,mp,st]",
     "pytest>=8.4.2",
     "syrupy>=4.0",
+    # dagstore's convergence property is property-tested, not example-tested:
+    # the invariant is about ALL interleavings, so the suite generates them.
+    "hypothesis>=6",
     "ruff>=0.9",
     "ty>=0.0.1a27",
 ]

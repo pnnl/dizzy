@@ -11,4 +11,3 @@ def tool_catalog(
     context.adapter.session.merge(
         Tool(tool_id=event.tool_id, name=event.name)
     )
-    context.adapter.session.commit()

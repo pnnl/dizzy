@@ -12,4 +12,3 @@ def batch_finalizer(
     batch = session.get(Batch, event.batch_id)
     if batch is not None:
         batch.status = "completed"
-        session.commit()

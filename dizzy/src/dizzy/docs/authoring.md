@@ -466,6 +466,20 @@ def receipt_store(
     raise NotImplementedError
 ```
 
+**House rule: a projection writes, it never commits.** The engine owns the
+read-model transaction boundary — it commits once per event, after that event's
+projections have folded and before its policies dispatch. A `session.commit()`
+inside a fold breaks that: an event folding through two projections can be
+half-committed on a crash, and a host can no longer choose a different boundary
+for a different runtime.
+
+**Write folds that can run twice.** The same event reaches a projection more
+than once by design — a rebuild refolds the whole stream, replication folds a
+peer's facts, and the multiprocess shell delivers at-least-once. So fold with
+`merge`/assignment/set-insertion, not `+= 1`, and make status changes
+one-directional. A fold that is not idempotent is not a projection bug that
+shows up under load; it is one that shows up the first time anyone rebuilds.
+
 ### lib/python-uv/query/<name>/src/<name>.py
 You receive `input` (typed Input model) and `context` (with adapter access).
 Return the typed Output model.

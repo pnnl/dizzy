@@ -340,11 +340,12 @@ def run_command(
         try:
             runtime.engine.run_command(command_cls(**json.loads(payload_json)))
         except Exception as exc:
-            runtime.engine._events.clear()  # a failed run must not leak its
-            if runtime.session is not None:  # un-appended events into the NEXT
-                runtime.session.rollback()  # command on this process (st builds
-                # a fresh engine per job; this
-                # singleton must reset instead)
+            # A failed run must not leak its un-appended events, or a partial
+            # fold, into the NEXT command on this process. st builds a fresh
+            # engine per job; this singleton has to reset instead.
+            runtime.engine.discard_pending_events()
+            if runtime.session is not None:
+                runtime.session.rollback()
             import traceback
 
             span.set_status(Status(StatusCode.ERROR, f"{type(exc).__name__}: {exc}"))

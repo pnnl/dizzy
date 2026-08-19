@@ -17,4 +17,3 @@ def generation_graph(
             produced_at=event.produced_at,
         )
     )
-    context.adapter.session.commit()
