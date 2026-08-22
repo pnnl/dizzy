@@ -99,3 +99,24 @@ install-completions:
 
 tag tag:
     git tag {{tag}}; git push origin {{tag}}
+
+# Naive on purpose: it counts every tracked line, docs and tests and lockfiles
+# included, so it reads high and errs toward over-scoping a review. Takes a ref to
+# compare against something other than the last tag: `just churn origin/main`.
+# How much of this branch is new since the last tagged release.
+churn ref='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base_ref="{{ref}}"
+    [ -n "$base_ref" ] || base_ref="$(git describe --tags --abbrev=0)"
+    base=$(git grep -c '' "$base_ref" -- . | awk -F: '{s+=$NF} END{print s+0}')
+    read -r add del < <(git diff --numstat "$base_ref"..HEAD -- . \
+        | awk '{a+=$1; d+=$2} END{print a+0, d+0}')
+    files=$(git diff --name-only "$base_ref"..HEAD -- . | wc -l)
+    awk -v r="$base_ref" -v b="$base" -v a="$add" -v d="$del" -v f="$files" 'BEGIN {
+        printf "%s..HEAD  %d files changed\n\n", r, f
+        printf "  baseline   %8d lines\n", b
+        printf "  added      %8d   %5.1f%% of baseline\n", a, b ? a/b*100 : 0
+        printf "  deleted    %8d\n", d
+        printf "  net        %+8d   %5.1f%%  -> %d lines\n", a-d, b ? (a-d)/b*100 : 0, b+a-d
+    }'
