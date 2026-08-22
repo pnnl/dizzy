@@ -8,6 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+#### Runtime — the `dizzy.engine` kit
+
+- **`dizzy.engine`** — the runtime kit, extracted from the example apps so an
+  app no longer brings its own control loop:
+  - `loop.Engine` — the control loop. Projections fold and the read model commits
+    BEFORE policies dispatch.
+  - `store.EventStore` over a vendored, stdlib-only content-addressed `dagstore/`.
+  - `rebuild` / `replicate` — refold the stream; pull a peer's facts through the
+    same projections.
+  - `registry.FeatGraph` — the feat read as an app's topology.
+  - `ports` — `HostApp` / `ShellServices` / `Runtime`, the seam an app publishes
+    itself through.
+
+  Nothing in the tree names a command, event, or environment field — it reads them.
+- **Scheduling shells** `dizzy.engine.st` and `dizzy.engine.mp`. The engine hands
+  every policy-dispatched command to the shell, so **the shell is part of the
+  defined semantics**:
+  - `st` — one lane, sequentially consistent.
+  - `mp` — N workers, at-least-once, deliberately *not* sequentially consistent.
+
+  `dizzy/tests/engine/test_conformance.py` is the contract and asserts which
+  guarantee each one claims.
+- `dizzy.engine.sqla` — SQLite read-model cache management (the completion
+  marker, and why a crashed refold must not look current), covered by tests
+  including the crash-then-retry path.
+
+#### Generation
+
+- **`dizzy generate wiring`** — a fourth pipeline stage emitting
+  `lib/<runtime>/wiring/`: the declared elements bound to a `dizzy.engine` engine
+  plus the `HostApp` a shell resolves from `$DIZZY_HOST_APP`. The wiring is a
+  pure function of the feature-file, and is engine-mediated by construction:
+  - A procedure's emitters bind to `engine.emit_event`, a policy's to
+    `engine.dispatch_command` — so no element can call another.
+  - `Resources.overrides` is the declared escape hatch.
+  - It is the only generated package that depends on DIZZY itself.
+  - `examples/recipes/kitchen.py` drops from 428 to 147 lines with byte-identical
+    demo output.
+- **`--dizzy-source`** on `dizzy generate wiring`: a generated workspace now
+  always gets a `[tool.uv.sources]` entry at its root, so `dizzy` resolves to
+  this project rather than the unrelated PyPI package of the same name.
+- **JSON Schema contracts** — `dizzy generate static` now emits runtime-neutral JSON
+  Schema into `gen_schema/`, one document per `def/` source, via LinkML's
+  `gen-json-schema`:
+  - Driven by a new optional `json_schema` section in `libconfig.yaml`
+    (`contracts:` any of `commands | events | queries | models`, `output_dir:`
+    defaulting to `gen_schema`).
+  - Omitting the section emits nothing, so existing `libconfig.yaml` files produce
+    byte-identical output.
+  - `generate definitions` writes the section into new stubs with `[commands, queries]`.
+
+#### Feature-file format and CLI
+
 - **Feature-file format** (`.feat.yaml`): a single artifact declaring a domain
   as commands, events, procedures, policies, projections, models, and queries —
   the reactivity loop (commands → procedures → events → policies) and the data
@@ -16,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the design: `definitions` (LinkML `def/` schema stubs), `static` (the
   `gen_def/` and `gen_int/` typed-contract packages), and `libraries`
   (per-runtime implementation-stub packages driven by `libconfig.yaml`). A
-  fourth, `wiring`, produces the host — see below.
+  fourth, `wiring`, produces the host — see above.
 - **Runtime targets**: `python-uv` (most complete), plus experimental
   `rust-cargo` and `typescript-npm` generators; model adapters (e.g. `sqla`).
 - **`dizzy simulate`** — LLM-driven execution of a feature-file against a
@@ -27,6 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guestbook, library and agent features ship as validated walkthroughs under
   `docs/tutorials/`, and `examples/simulate` holds the reference scenarios for
   `dizzy simulate`.
+
+#### Documentation and project tooling
+
+- **[What DIZZY is (and why events)](docs/explanation/what-is-dizzy.md)** — an
+  on-ramp for readers who have not done event sourcing. Opens on the design
+  decision a `status` column makes for you, then names the seven element types as
+  parts of a system the reader has already seen. Includes the guestbook
+  feature-file by snippet so it cannot drift, and hands off to the tutorial.
 - Trunk-based CI (`ci.yml`): tests gate every PR; ruff lint/format and `ty`
   type checks run as advisory signal.
 - Tag-driven release pipeline (`release.yml`): a `v*` tag builds the sdist +
@@ -35,82 +97,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ruff` (lint + format) and `ty` added to the dev dependency group, with
   `just lint`, `just fmt`, `just fmt-check`, `just ci`, and `just build`
   recipes.
-- **`dizzy.engine`** — the runtime kit, extracted from the example apps so an
-  app no longer brings its own control loop: `loop.Engine` (projections fold and
-  the read model commits BEFORE policies dispatch), `store.EventStore` over a
-  vendored, stdlib-only content-addressed `dagstore/`, `rebuild`/`replicate`
-  (refold the stream; pull a peer's facts through the same projections),
-  `registry.FeatGraph` (the feat read as an app's topology), and `ports`
-  (`HostApp`/`ShellServices`/`Runtime`, the seam an app publishes itself through).
-  Nothing in the tree names a command, event, or environment field — it reads
-  them.
-- **Scheduling shells** `dizzy.engine.st` and `dizzy.engine.mp`. The engine hands
-  every policy-dispatched command to the shell, so **the shell is part of the
-  defined semantics**: `st` (one lane) is sequentially consistent, `mp` (N
-  workers, at-least-once) deliberately is not.
-  `dizzy/tests/engine/test_conformance.py` is the contract and asserts which
-  guarantee each one claims.
-- **`dizzy generate wiring`** — a fourth pipeline stage emitting
-  `lib/<runtime>/wiring/`: the declared elements bound to a `dizzy.engine` engine
-  plus the `HostApp` a shell resolves from `$DIZZY_HOST_APP`. The wiring is a
-  pure function of the feature-file, and is engine-mediated by construction — a
-  procedure's emitters bind to `engine.emit_event`, a policy's to
-  `engine.dispatch_command`, so no element can call another. `Resources.overrides`
-  is the declared escape hatch. It is the only generated package that depends on
-  DIZZY itself. `examples/recipes/kitchen.py` drops from 428 to 147 lines with
-  byte-identical demo output.
-- **`--dizzy-source`** on `dizzy generate wiring`: a generated workspace now
-  always gets a `[tool.uv.sources]` entry at its root, so `dizzy` resolves to
-  this project rather than the unrelated PyPI package of the same name.
-- `dizzy.engine.sqla` — SQLite read-model cache management (the completion
-  marker, and why a crashed refold must not look current), covered by tests
-  including the crash-then-retry path.
-- **JSON Schema contracts** — `dizzy generate static` now emits runtime-neutral JSON
-  Schema into `gen_schema/`, one document per `def/` source, via LinkML's
-  `gen-json-schema`. Driven by a new optional `json_schema` section in
-  `libconfig.yaml` (`contracts:` any of `commands | events | queries | models`,
-  `output_dir:` defaulting to `gen_schema`). Omitting the section emits nothing, so
-  existing `libconfig.yaml` files produce byte-identical output; `generate definitions`
-  writes the section into new stubs with `[commands, queries]`.
-- **[What DIZZY is (and why events)](docs/explanation/what-is-dizzy.md)** — an
-  on-ramp for readers who have not done event sourcing. Opens on the design
-  decision a `status` column makes for you, then names the seven element types as
-  parts of a system the reader has already seen. Includes the guestbook
-  feature-file by snippet so it cannot drift, and hands off to the tutorial.
 - `just churn [ref]` — how much of the current branch is new since the last tagged
   release, for scoping review before a cut. Naive by design: every tracked line,
   docs and tests and lockfiles included.
 
 ### Changed
-- Package version is now derived from git tags via `hatch-vcs` instead of being
-  hardcoded in `pyproject.toml` and `__init__.py`.
-- `pyproject.toml` gained release metadata (license, authors, classifiers, URLs).
+
+#### Packaging and distribution
+
 - **Dependencies restructured around what the runtime actually needs.** Core is
   `pyyaml` + `pydantic` (the store round-trips events through the generated
   classes); the generator tree (`linkml`, `openai`, `typer`) moved behind the
   `gen` extra, so a worker installing DIZZY for a scheduling shell does not
-  inherit a code generator it will never call. New extras: `st`, `mp`
-  (dramatiq/redis + the OpenTelemetry *API* only), `sqla`, and `all`.
-  `dizzy[gen]` is the authoring install.
+  inherit a code generator it will never call.
+  - New extras: `gen` (the authoring install — the CLI and every generator),
+    `st`, `mp` (dramatiq/redis + the OpenTelemetry *API* only), `sqla`, and `all`.
 - **DIZZY is not published to a package index**, by decision — the git
   repository and GitHub Release wheels are the distribution. Dependents name the
   source: `dizzy[gen] @ git+https://github.com/PNNL/dizzy`. README,
-  `pyproject.toml`, `dizzy.engine.mp` and `release.yml` all state this; the name
-  `dizzy` on PyPI belongs to an unrelated network fuzzer.
+  `pyproject.toml`, `dizzy.engine.mp` and `release.yml` all state this.
+- Package version is now derived from git tags via `hatch-vcs` instead of being
+  hardcoded in `pyproject.toml` and `__init__.py`.
+- `pyproject.toml` gained release metadata (license, authors, classifiers, URLs).
+
+#### LinkML floor raised to `>=1.11.1`
+
+The floor moved because 1.9.5 mapped `range: decimal` to `Column(Integer())` in
+`gen-sqla` — silent data loss on every monetary or measured field. 1.11.x emits
+`Column(Numeric())`. Three further behaviour changes ride along with the bump:
+
+- `gen-pydantic` now defaults optional multivalued slots to `None` rather than
+  `[]`, and no longer emits the `treat_empty_lists_as_none` model serializer.
+  - Consequently, `load_libconfig` now materialises absent element sections as
+    `[]` itself rather than relying on the generated default.
+- Generated modules carry a real `metamodel_version` instead of `"None"`.
+- The committed `gen` snapshots were refreshed to match the new output.
+
+#### Behaviour
+
 - `examples/recipes` runs on the canonical engine, engine-mediated rather than
   calling element-to-element. Its server now owns one path-backed event store
   instead of building a fresh in-memory one per request.
 - `ty` reports zero diagnostics over the scope CI checks.
-- LinkML floor is `>=1.11.1` (the current latest). 1.9.5 mapped `range: decimal`
-  to `Column(Integer())` in `gen-sqla` — silent data loss; 1.11.x emits
-  `Column(Numeric())`. Two further behaviour changes come with it: `gen-pydantic`
-  now defaults optional multivalued slots to `None` rather than `[]` (and no
-  longer emits the `treat_empty_lists_as_none` model serializer), and generated
-  modules carry a real `metamodel_version` instead of `"None"`.
-- `load_libconfig` now materialises absent element sections as `[]` rather than relying
-  on LinkML's pydantic default, which changed to `None` in 1.11.
 
 ### Removed
+
 - `Envelope.to_dict` and `Engine.registered()` — both added during the engine
   extraction, neither ever called. `registered()` was meant to catch wiring
   drift, which generated wiring makes structurally impossible.
@@ -121,6 +152,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapter *instance*, supplied by the host and looked up by name.
 
 ### Fixed
+
 - `just install` installed a bare `.`, but `cli.py` imports `typer` at module scope
   and typer moved behind the `gen` extra — the recipe put a `dizzy` on PATH that
   died on `ModuleNotFoundError` before it could print `--help`. It now installs
