@@ -60,28 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     byte-identical output.
   - `generate definitions` writes the section into new stubs with `[commands, queries]`.
 
-#### Feature-file format and CLI
-
-- **Feature-file format** (`.feat.yaml`): a single artifact declaring a domain
-  as commands, events, procedures, policies, projections, models, and queries —
-  the reactivity loop (commands → procedures → events → policies) and the data
-  loop (events → projections → models → queries).
-- **`dizzy generate`** — the pipeline from a feature-file. Three stages produce
-  the design: `definitions` (LinkML `def/` schema stubs), `static` (the
-  `gen_def/` and `gen_int/` typed-contract packages), and `libraries`
-  (per-runtime implementation-stub packages driven by `libconfig.yaml`). A
-  fourth, `wiring`, produces the host — see above.
-- **Runtime targets**: `python-uv` (most complete), plus experimental
-  `rust-cargo` and `typescript-npm` generators; model adapters (e.g. `sqla`).
-- **`dizzy simulate`** — LLM-driven execution of a feature-file against a
-  scenario (level 0).
-- **`dizzy onboard` / `docs` / `config`** — agent-facing project overview, the
-  CLI + authoring documentation, and a config template.
-- **Worked example**: `examples/recipes`, a multi-step policy-driven cascade; the
-  guestbook, library and agent features ship as validated walkthroughs under
-  `docs/tutorials/`, and `examples/simulate` holds the reference scenarios for
-  `dizzy simulate`.
-
 #### Documentation and project tooling
 
 - **[What DIZZY is (and why events)](docs/explanation/what-is-dizzy.md)** — an
@@ -89,14 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision a `status` column makes for you, then names the seven element types as
   parts of a system the reader has already seen. Includes the guestbook
   feature-file by snippet so it cannot drift, and hands off to the tutorial.
-- Trunk-based CI (`ci.yml`): tests gate every PR; ruff lint/format and `ty`
-  type checks run as advisory signal.
-- Tag-driven release pipeline (`release.yml`): a `v*` tag builds the sdist +
-  wheel and cuts a GitHub Release with those artifacts attached.
-- `CONTRIBUTING.md` documenting the dev setup, quality gates, and release flow.
-- `ruff` (lint + format) and `ty` added to the dev dependency group, with
-  `just lint`, `just fmt`, `just fmt-check`, `just ci`, and `just build`
-  recipes.
 - `just churn [ref]` — how much of the current branch is new since the last tagged
   release, for scoping review before a cut. Naive by design: every tracked line,
   docs and tests and lockfiles included.
@@ -116,9 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repository and GitHub Release wheels are the distribution. Dependents name the
   source: `dizzy[gen] @ git+https://github.com/PNNL/dizzy`. README,
   `pyproject.toml`, `dizzy.engine.mp` and `release.yml` all state this.
-- Package version is now derived from git tags via `hatch-vcs` instead of being
-  hardcoded in `pyproject.toml` and `__init__.py`.
-- `pyproject.toml` gained release metadata (license, authors, classifiers, URLs).
 
 #### LinkML floor raised to `>=1.11.1`
 
@@ -170,4 +137,73 @@ The floor moved because 1.9.5 mapped `range: decimal` to `Column(Integer())` in
   the repo a uv monorepo (it is one hatchling package), listed a `queriers:` section
   absent from the schema, and pinned an install example to a tag that was never cut.
 
+## [0.1.1] - 2026-06-25
+
+Documentation release. The tool's own docs moved into the package, the prose became
+a Diátaxis site, and the tutorials became executable — checked on every PR rather
+than trusted.
+
+### Added
+- **mkdocs Diátaxis site** (`mkdocs.yml`, `docs/`), deployed to GitHub Pages by
+  `docs.yml`. API reference pages are generated from the source by
+  `gen_ref_pages.py` via mkdocstrings.
+- **Validated tutorials**, executed by [byexample](https://byexamples.github.io/):
+  `guestbook` (a feature end to end), `library` (a policy that consults a query),
+  and `agent` (a streaming agent turn). Every command and every line of output on
+  those pages is run and compared, so they cannot drift from the tool.
+- `just tutorials-check`, and a CI job gating it on every PR.
+- **Tool-shipped documentation**: `cli.md`, `authoring.md` and `onboard.md` moved
+  into `dizzy/src/dizzy/docs/` so they ship in the wheel and are printed by
+  `dizzy docs` / `dizzy docs authoring` / `dizzy onboard`.
+- `docs/how-to/add-a-validated-tutorial.md`, and `just tutorial-capture` to render
+  schema edits as applied diffs rather than hand-transcribed ones.
+
+### Changed
+- The `guestbook`, `library` and `agent` examples were retired from `examples/` —
+  they are validated tutorials now. `examples/` keeps `recipes` and `simulate`.
+- Generated `gen_def`/`gen_int` packages are no longer committed for examples; they
+  are gitignored and regenerated on demand.
+- Dead specification documents were deleted in favour of the shipped docs.
+
+### Fixed
+- `ty` errors arising from Optional LinkML slots.
+
+## [0.1.0] - 2026-06-25
+
+First tagged release: the feature-file format, the generate pipeline, and the
+release machinery to ship them.
+
+### Added
+- **Feature-file format** (`.feat.yaml`): a single artifact declaring a domain
+  as commands, events, procedures, policies, projections, models, and queries —
+  the reactivity loop (commands → procedures → events → policies) and the data
+  loop (events → projections → models → queries).
+- **`dizzy generate`** — the three-stage pipeline from a feature-file:
+  `definitions` (LinkML `def/` schema stubs), `static` (the `gen_def/` and
+  `gen_int/` typed-contract packages), and `libraries` (per-runtime
+  implementation-stub packages driven by `libconfig.yaml`).
+- **Runtime targets**: `python-uv` (most complete), plus experimental
+  `rust-cargo` and `typescript-npm` generators; model adapters (e.g. `sqla`).
+- **`dizzy simulate`** — LLM-driven execution of a feature-file against a
+  scenario (level 0).
+- **`dizzy onboard` / `docs` / `config`** — agent-facing project overview, the
+  CLI + authoring documentation, and a config template.
+- **Worked examples**: a fully implemented, runnable `guestbook`, plus
+  `recipes`, `library`, and `agent` feature-files.
+- Trunk-based CI (`ci.yml`): tests gate every PR; ruff lint/format and `ty`
+  type checks run as advisory signal.
+- Tag-driven release pipeline (`release.yml`): a `v*` tag builds the sdist +
+  wheel and cuts a GitHub Release with those artifacts attached.
+- `CONTRIBUTING.md` documenting the dev setup, quality gates, and release flow.
+- `ruff` (lint + format) and `ty` added to the dev dependency group, with
+  `just lint`, `just fmt`, `just fmt-check`, `just ci`, and `just build`
+  recipes.
+
+### Changed
+- Package version is now derived from git tags via `hatch-vcs` instead of being
+  hardcoded in `pyproject.toml` and `__init__.py`.
+- `pyproject.toml` gained release metadata (license, authors, classifiers, URLs).
+
 [Unreleased]: https://github.com/PNNL/dizzy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/PNNL/dizzy/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/PNNL/dizzy/releases/tag/v0.1.0
