@@ -58,6 +58,7 @@ from dizzy.generators.queries import (
 )
 from dizzy.generators.telemetry import write_scaffold_telemetry
 from dizzy.generators.type_packages import write_type_packages
+from dizzy.generators.wiring import write_wiring_python_uv
 from dizzy.libconfig_loader import load_libconfig, validate_libconfig
 from dizzy.logger import logger, setup_logging
 from dizzy.simulate.session import Session
@@ -354,6 +355,72 @@ def lib(
             write_workspace_typescript_npm(members, output_dir)
 
     logger.info("Generated lib/ packages. Implement the stubs in lib/<runtime>/<kind>/<name>/src/")
+
+
+@generate_app.command("wiring")
+def wiring(
+    feat_file: Path = typer.Argument(..., help="Path to the .feat.yaml file"),
+    output_dir: Path = typer.Argument(..., help="Output directory (must contain libconfig.yaml)"),
+    dizzy_source: str | None = typer.Option(
+        None,
+        "--dizzy-source",
+        help=(
+            "Where the generated workspace gets DIZZY: a checkout path (relative to "
+            "lib/<runtime>/) or a git URL. DIZZY is not published to a package index, "
+            "so this defaults to the canonical repository."
+        ),
+    ),
+) -> None:
+    """Generate lib/<runtime>/wiring/ — the binding from elements to the runtime."""
+    feat = load_feat(feat_file)
+
+    errors = validate_feat(feat)
+    if errors:
+        for err in errors:
+            logger.error("%s", err)
+        raise typer.Exit(code=1)
+
+    libconfig_path = output_dir / "libconfig.yaml"
+    if not libconfig_path.exists():
+        logger.error("libconfig.yaml not found. Run `dizzy generate definitions` first.")
+        raise typer.Exit(code=1)
+
+    config = load_libconfig(libconfig_path)
+    config_errors = validate_libconfig(config, feat)
+    if config_errors:
+        for err in config_errors:
+            logger.error("%s", err)
+        raise typer.Exit(code=1)
+
+    # The wiring imports every element package, so it can only be generated for a
+    # runtime that has them. Today that is python-uv; rust/ts stop at types + stubs.
+    members: list[tuple[str, str]] = []
+    for kind, bindings in [
+        ("procedure", config.procedures or []),
+        ("policy", config.policies or []),
+        ("query", config.queries or []),
+        ("projection", config.projections or []),
+    ]:
+        for binding in bindings:
+            if "python-uv" in [str(rt) for rt in binding.runtimes or []]:
+                members.append((kind, binding.name))
+
+    if not members:
+        logger.error(
+            "No python-uv elements in libconfig.yaml — nothing to wire. "
+            "Run `dizzy generate libraries` first."
+        )
+        raise typer.Exit(code=1)
+
+    write_wiring_python_uv(feat, feat_file, output_dir)
+    # Re-emit the manifest with the wiring package as a member. Listing it before
+    # it exists would make the whole workspace unresolvable, so `libraries` leaves
+    # it out and this stage adds it.
+    write_workspace_python_uv(members, output_dir, include_wiring=True, dizzy_source=dizzy_source)
+    logger.info(
+        "Generated lib/python-uv/wiring/. Build a HostApp with "
+        "wiring.host_app(...) and point $DIZZY_HOST_APP at it."
+    )
 
 
 @app.command()

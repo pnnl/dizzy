@@ -37,6 +37,7 @@ ci: lint fmt-check check test
 examples-check:
     uv run dizzy generate static examples/recipes/recipes.feat.yaml examples/recipes
     uv run dizzy generate libraries examples/recipes/recipes.feat.yaml examples/recipes
+    uv run dizzy generate wiring examples/recipes/recipes.feat.yaml examples/recipes --dizzy-source ../../../..
     git diff --exit-code examples/recipes
 
 # --- Build ---

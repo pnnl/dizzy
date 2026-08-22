@@ -4,8 +4,18 @@
 This package is the other half: the machinery that schedules those elements at
 runtime, and — crucially — does so without knowing what they are.
 
-Two pieces here, plus a scheduling shell per execution model:
+Five pieces here, plus a scheduling shell per execution model:
 
+- ``loop`` — ``Engine``: the control loop. Command -> procedure -> events ->
+  projections -> policies -> commands, with the read-model commit boundary
+  between the fold and the dispatch. It is keyed by generated class, so it
+  names nothing.
+- ``store`` — ``EventStore`` over ``dagstore``, a content-addressed event DAG:
+  the truth an engine appends to before anything else runs.
+- ``rebuild`` / ``replicate`` — the two things you can do with a stream besides
+  run it forward: refold it into the read models (the recoverability test), and
+  pull a peer's facts and fold those through the same projections. Both take
+  the projection runners as an argument, so neither knows a feature.
 - ``registry`` — ``FeatGraph``: the feat file read into an app's topology, with
   every declared command and event resolved to its generated pydantic class by
   DIZZY's naming convention. This is what makes a shell generic. The feat
@@ -29,11 +39,23 @@ The shells differ ONLY in scheduling — who holds the command queue, who runs
 the workers, where telemetry lands. The engine they drive and the wiring that
 binds a feature to it are shared, and both shells execute them verbatim.
 
-``ports`` and ``registry`` import at the cost of pyyaml; the mp shell's broker
-dependencies stay behind its extra, so importing ``dizzy.engine`` never drags
-in a broker.
+They do NOT, however, claim the same semantics, and that difference is
+deliberate rather than incidental. Because the engine hands every
+policy-dispatched command to the shell's queue, the shell owns the command
+phase — so it is the shell, not the engine, that decides how many commands run
+at once. ``st`` drains one lane in one process and is sequentially consistent:
+one legal interleaving, which is DIZZY's *defined* semantics. ``mp`` runs N
+workers under at-least-once delivery and is knowingly weaker, relying on
+confluent projections to absorb the reordering and the duplicates. A host picks
+the shell whose guarantee it needs.
+
+The engine reads and writes read models only through the runners the wiring
+registers, so it carries no ORM: ``dizzy.engine`` costs pyyaml and pydantic and
+nothing else. The mp shell's broker dependencies stay behind its extra, so
+importing ``dizzy.engine`` never drags in a broker.
 """
 
+from dizzy.engine.loop import Engine
 from dizzy.engine.ports import (
     CommandQueue,
     HostApp,
@@ -55,11 +77,15 @@ from dizzy.engine.registry import (
     reset_graph,
     snake_case,
 )
+from dizzy.engine.store import Envelope, EventStore, reconstruct_event
 
 __all__ = [
     "SECTIONS",
     "TOPOLOGY_SECTIONS",
     "CommandQueue",
+    "Engine",
+    "Envelope",
+    "EventStore",
     "FeatGraph",
     "HostApp",
     "NullOtel",
@@ -72,6 +98,7 @@ __all__ = [
     "find_feat",
     "graph",
     "null_app",
+    "reconstruct_event",
     "reset_graph",
     "snake_case",
 ]

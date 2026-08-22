@@ -17,4 +17,3 @@ def recipe_catalog(
             output_unit=event.output_unit,
         )
     )
-    context.adapter.session.commit()

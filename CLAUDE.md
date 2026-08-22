@@ -22,7 +22,7 @@ dizzy onboard
 This is a map, not a reading list — pull in only what your task needs. Ordered by
 how often a task needs them:
 
-1. **`README.md`** — what/why, install, minimal feature, the three-stage workflow.
+1. **`README.md`** — what/why, install, minimal feature, the four-stage workflow.
 2. **`dizzy/src/dizzy/docs/cli.md`** — CLI manpage **and roadmap**. The canonical
    end-state: every command section is the requirements doc for that command. Seeds
    reference these sections. Ships with the tool; printed by `dizzy docs`. *Keep this
@@ -37,21 +37,34 @@ how often a task needs them:
 6. **`dizzy/src/dizzy/`** — implementation: `cli.py` (verbs), `feat_schema.py` /
    `libconfig_schema.py` (generated — edit `dizzy/src/dizzy/def/*.yaml` and run
    `just gen-feat-pydantic` / `just gen-libconfig-pydantic` instead), `generators/`.
-7. **`dizzy/src/dizzy/engine/`** — the runtime kit (seed `dizzy-ffdc`): `registry.py`
-   (`FeatGraph` — the feat read as an app's topology, every declared name resolved to
-   its generated class), `ports.py` (`HostApp`/`ShellServices`/`Runtime` — the seam an
-   app publishes itself through), and the two scheduling shells `st/` and `mp/`.
-   **The rule here: a shell must never name a command, event, or environment field.**
-   It reads them. Anything app-specific arrives through the `HostApp` a host sets in
-   `$DIZZY_HOST_APP`. Deps: core is pyyaml only, the generator's tree lives behind the
-   `gen` extra and `mp`'s broker behind `mp` — a worker must not inherit either.
+7. **`dizzy/src/dizzy/engine/`** — the runtime kit (seed `dizzy-ffdc`): `loop.py`
+   (`Engine` — the control loop; projections fold and the read model commits BEFORE
+   policies dispatch), `store.py` + `dagstore/` (the content-addressed event stream,
+   the truth), `rebuild.py`/`replicate.py` (refold the stream; pull a peer's facts),
+   `registry.py` (`FeatGraph` — the feat read as an app's topology, every declared
+   name resolved to its generated class), `ports.py` (`HostApp`/`ShellServices`/
+   `Runtime` — the seam an app publishes itself through), and the two scheduling
+   shells `st/` and `mp/`.
+   **The rule here: nothing in this tree may name a command, event, or environment
+   field.** It reads them. Anything app-specific arrives through the `HostApp` a host
+   sets in `$DIZZY_HOST_APP`, or as an argument (`runners=`, `event_classes=`).
+   The engine owns the command queue's *contents* but not its *scheduling*: a policy's
+   command goes to the shell, so **the shell is part of the defined semantics** — `st`
+   is sequentially consistent, `mp` deliberately is not. `tests/engine/test_conformance.py`
+   is the contract, and asserts which guarantee each one claims.
+   Deps: core is pyyaml + pydantic (the store round-trips events through the generated
+   classes); the generator's tree lives behind the `gen` extra, `mp`'s broker behind
+   `mp`, and SQLAlchemy behind `sqla` — the engine itself carries no ORM, because it
+   reaches read models only through the runners a wiring registers.
 8. **`docs/whitepaper.typ`, `docs/PNF.md`** — theory and rationale.
    Maintainer-authored: AI may review/fact-check these, never author them.
 
 ## CLI at a glance
 
-- `dizzy generate definitions|static|libraries <feat> <out>` — the shipped pipeline
-  (legacy aliases: `def`/`gen`/`lib`).
+- `dizzy generate definitions|static|libraries|wiring <feat> <out>` — the shipped
+  pipeline (legacy aliases: `def`/`gen`/`lib`). `wiring` emits `lib/<runtime>/wiring/`:
+  the elements bound to a `dizzy.engine` engine, plus the `HostApp` a shell resolves.
+  It is the only generated package that depends on DIZZY itself.
 - `dizzy docs [cli|authoring]` — print documentation; `dizzy config` — config template.
 - Roadmap commands (`lint`, `diff`, `impact`, `simulate`, …) are specified in
   `dizzy/src/dizzy/docs/cli.md` and tracked as seeds.

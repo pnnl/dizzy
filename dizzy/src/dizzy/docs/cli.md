@@ -46,9 +46,14 @@ library artifacts. A procedure's interface declares exactly the command it recei
 queries it may call, the events it may emit; exceeding declared scope is a type error.
 The spine of the toolchain; everything else is decoration until this works.
 
-Generation is a three-stage pipeline with **human-in-the-loop** authoring at each
+Generation is a four-stage pipeline with **human-in-the-loop** authoring at each
 handoff. Generated interfaces are always overwritten; files you author (`def/` schemas,
 `libconfig.yaml`, and the implementation stubs in `lib/`) are never clobbered.
+
+The first three stages produce the *design*: schemas, contracts, and element stubs for
+you to fill in. The fourth produces the *host*: the binding that hands those elements to
+a runtime. Stages one to three answer "what is this feature"; stage four answers "how
+does it run".
 
 ### dizzy generate definitions <feat_file> <output_dir>
 
@@ -74,6 +79,46 @@ stub in `src/` for you to fill in. Writes the workspace manifest; a generated
 **Open requirement:** must work end-to-end in **at least two target languages** (this
 is what proves the language-agnostic claim). Today `python-uv` is complete;
 `rust-cargo` and `typescript-npm` generate types + stubs but not protocols/contexts.
+
+### dizzy generate wiring <feat_file> <output_dir>
+
+Emit the binding between the generated elements and the runtime (`dizzy.engine`) as
+`lib/<runtime>/wiring/` — an installable workspace package holding `build_runtime` and
+the `HostApp` a scheduling shell resolves from `$DIZZY_HOST_APP`. Requires the element
+packages; run `libraries` first.
+
+This is the only generated package that depends on DIZZY itself, and **DIZZY is not
+published to a package index** — the name there belongs to an unrelated project. So the
+stage also writes a `[tool.uv.sources]` entry at the workspace root naming where DIZZY
+comes from: the canonical repository by default, or `--dizzy-source <path|git-url>` to
+override (a checkout path is the usual choice when the generated lib lives inside the
+repository that generated it).
+
+**Wiring is a pure function of the feature-file, which is why it is generated.** The feat
+already declares, per element, exactly the argument list of its generated context: a
+procedure's `command:` gives the command it registers under, its `emits:` the emitter
+bindings, its `queries:` the query bindings, its `environment:` and `telemetry:` the
+remaining constructor arguments; a projection's `event:` gives the event→projection
+routing; a policy's `event:` and `emits:` give its registration and its dispatch targets.
+Hand-writing that is transcription, and transcription drifts — this is the last artifact
+in the toolchain that was still copied out of the design by hand.
+
+Always overwritten, like every other generated interface. To specialize an element's
+binding, pass an override by name rather than editing the file:
+
+```python
+build_runtime(services, overrides={"detect_faces": my_lazy_runner})
+```
+
+That seam exists because real hosts need it — a capability-pooled element a node must not
+import, a query that has to run on a short-lived session — and an app that forks the
+generated module to get it has thrown away the guarantee the generator provides.
+
+Emitted wiring is **engine-mediated**: every emit goes to the engine and every dispatch to
+its command queue, so no element ever calls another directly. That is what lets the engine
+own the ordering rule (projections fold and the read model commits before policies
+dispatch) instead of each generated handler restating it, and what lets the same wiring run
+under either scheduling shell.
 
 > The legacy verbs `dizzy def` / `dizzy gen` / `dizzy lib` are deprecated aliases for
 > `generate definitions` / `generate static` / `generate libraries`.

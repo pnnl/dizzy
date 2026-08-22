@@ -22,6 +22,9 @@ Run inside the workspace environment (from the repo root):
 
     uv sync --project examples/recipes/lib/python-uv
     uv run --project examples/recipes/lib/python-uv python examples/recipes/demo.py
+
+The generated ``wiring`` package depends on DIZZY, and the workspace resolves that
+against this checkout, so the runtime comes in with the sync.
 """
 
 from typing import Any

@@ -17,4 +17,3 @@ def batch_store(
             opened_at=event.opened_at,
         )
     )
-    context.adapter.session.commit()

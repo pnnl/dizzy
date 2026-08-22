@@ -1,0 +1,79 @@
+[project]
+name = "wiring"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "dizzy",
+    "gen_def",
+    "gen_int",
+    "procedure-record_ingredient",
+    "procedure-record_tool",
+    "procedure-record_recipe",
+    "procedure-record_step",
+    "procedure-record_step_input",
+    "procedure-open_batch",
+    "procedure-run_batch",
+    "policy-advance_ready_batches",
+    "projection-ingredient_catalog",
+    "projection-tool_catalog",
+    "projection-recipe_catalog",
+    "projection-step_catalog",
+    "projection-step_input_catalog",
+    "projection-batch_store",
+    "projection-batch_finalizer",
+    "projection-batch_reblocker",
+    "projection-inventory_store",
+    "projection-inventory_consumer",
+    "projection-generation_graph",
+    "projection-derivation_graph",
+    "query-get_recipe",
+    "query-get_recipe_steps",
+    "query-get_step_inputs",
+    "query-get_batch",
+    "query-check_inventory",
+    "query-find_blocked_batches",
+    "query-trace_provenance",
+    "query-list_recipes",
+    "query-list_batches",
+]
+
+[tool.uv.sources]
+gen_def = { workspace = true }
+gen_int = { workspace = true }
+procedure-record_ingredient = { workspace = true }
+procedure-record_tool = { workspace = true }
+procedure-record_recipe = { workspace = true }
+procedure-record_step = { workspace = true }
+procedure-record_step_input = { workspace = true }
+procedure-open_batch = { workspace = true }
+procedure-run_batch = { workspace = true }
+policy-advance_ready_batches = { workspace = true }
+projection-ingredient_catalog = { workspace = true }
+projection-tool_catalog = { workspace = true }
+projection-recipe_catalog = { workspace = true }
+projection-step_catalog = { workspace = true }
+projection-step_input_catalog = { workspace = true }
+projection-batch_store = { workspace = true }
+projection-batch_finalizer = { workspace = true }
+projection-batch_reblocker = { workspace = true }
+projection-inventory_store = { workspace = true }
+projection-inventory_consumer = { workspace = true }
+projection-generation_graph = { workspace = true }
+projection-derivation_graph = { workspace = true }
+query-get_recipe = { workspace = true }
+query-get_recipe_steps = { workspace = true }
+query-get_step_inputs = { workspace = true }
+query-get_batch = { workspace = true }
+query-check_inventory = { workspace = true }
+query-find_blocked_batches = { workspace = true }
+query-trace_provenance = { workspace = true }
+query-list_recipes = { workspace = true }
+query-list_batches = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+include = ["src/wiring.py", "src/*.feat.yaml"]

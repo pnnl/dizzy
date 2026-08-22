@@ -255,7 +255,7 @@ projections:
 
 ---
 
-## Three-Step Workflow
+## Four-Step Workflow
 
 ### Step 1: Scaffold definitions
 
@@ -289,6 +289,31 @@ workspace manifest. Each `python-uv` element package depends on the `gen_def`/`g
 packages and carries a real-signature implementation stub in `src/<name>.py` for you to
 fill in. Requires that `libconfig.yaml` exists; run `def` first. The Python path is the
 most complete; `rust-cargo` and `typescript-npm` are experimental.
+
+### Step 4: Generate the wiring
+
+```
+uv run dizzy generate wiring <feat_file> <output_dir>
+```
+
+Emits `lib/<runtime>/wiring/` — the binding between your implemented elements and the
+runtime. It registers each procedure under the command it handles, each projection
+under the event it folds, and each policy under the event it reacts to, binding every
+emitter to the engine and every declared query to its adapter. Also emits the
+`HostApp` a scheduling shell resolves from `$DIZZY_HOST_APP`.
+
+**You do not author this, and you should not edit it** — it is a pure function of the
+feature-file, regenerated whenever the feat changes. That is the point: the routing is
+the one thing that used to be transcribed by hand, and transcription drifts. To
+specialize a single element's binding, pass an override instead of forking the module:
+
+```python
+build_engine(queue, store, Resources(adapters=..., overrides={"detect_faces": my_runner}))
+```
+
+What you *do* author is the host around it: which database, which adapter instance,
+and — in a single-process host — the loop that drains the command queue. See
+`examples/recipes/kitchen.py` for a host that is nothing but that.
 
 The **Build a guestbook** tutorial (`docs/tutorials/guestbook.md`) walks the whole
 pipeline end to end, and `examples/` holds further worked features.
@@ -465,6 +490,20 @@ def receipt_store(
     # Write denormalized state for queries to read
     raise NotImplementedError
 ```
+
+**House rule: a projection writes, it never commits.** The engine owns the
+read-model transaction boundary — it commits once per event, after that event's
+projections have folded and before its policies dispatch. A `session.commit()`
+inside a fold breaks that: an event folding through two projections can be
+half-committed on a crash, and a host can no longer choose a different boundary
+for a different runtime.
+
+**Write folds that can run twice.** The same event reaches a projection more
+than once by design — a rebuild refolds the whole stream, replication folds a
+peer's facts, and the multiprocess shell delivers at-least-once. So fold with
+`merge`/assignment/set-insertion, not `+= 1`, and make status changes
+one-directional. A fold that is not idempotent is not a projection bug that
+shows up under load; it is one that shows up the first time anyone rebuilds.
 
 ### lib/python-uv/query/<name>/src/<name>.py
 You receive `input` (typed Input model) and `context` (with adapter access).

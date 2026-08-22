@@ -10,7 +10,7 @@ field. Everything app-specific therefore arrives through one object:
       .graph              the FeatGraph — the declared topology, resolved
       .build_runtime()    build this process's Engine (the app's wiring)
       .routes()           command -> (pool, message options)   [optional]
-      .otel               tracing/propagation provider          [optional]
+      .otel               tracing/metrics/propagation provider  [optional]
       .origin_for()       correlation to carry on a dispatch    [optional]
       .on_command_done()  the app's post-command hook           [optional]
       .span_attrs()       origin -> tracing attributes          [optional]
@@ -74,6 +74,22 @@ class _NullTracer:
         return _NullSpan()
 
 
+class _NullInstrument:
+    def record(self, *a, **k) -> None:
+        pass
+
+    def add(self, *a, **k) -> None:
+        pass
+
+
+class _NullMeter:
+    def create_histogram(self, *a, **k):
+        return _NullInstrument()
+
+    def create_counter(self, *a, **k):
+        return _NullInstrument()
+
+
 class NullOtel:
     """Satisfies the tracing surface a shell uses, doing nothing."""
 
@@ -82,6 +98,9 @@ class NullOtel:
 
     def tracer(self) -> Any:
         return _NullTracer()
+
+    def meter(self) -> Any:
+        return _NullMeter()
 
     def inject(self) -> dict:
         return {}

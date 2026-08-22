@@ -18,4 +18,3 @@ def step_input_catalog(
             unit=event.unit,
         )
     )
-    context.adapter.session.commit()

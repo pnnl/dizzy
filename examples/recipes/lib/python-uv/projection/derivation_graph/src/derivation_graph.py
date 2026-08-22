@@ -14,4 +14,3 @@ def derivation_graph(
             source_entity_id=event.source_entity_id,
         )
     )
-    context.adapter.session.commit()

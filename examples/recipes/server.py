@@ -62,6 +62,8 @@ from gen_def.sqla.models.provenance import Base as ProvenanceBase
 
 from gen_int.python.adapters.sqla import SqlaAdapter
 
+from wiring import EventStore, feat_graph
+
 from kitchen import Kitchen, build_kitchen
 
 
@@ -71,6 +73,15 @@ engine = create_engine(f"sqlite:///{DB_PATH}")
 for base in (CatalogBase, BatchesBase, InventoryBase, ProvenanceBase):
     base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine)
+
+# The EVENT STREAM is durable too, and — unlike the read models — there is exactly
+# one of it for the whole process. A Kitchen is built per request, so letting each
+# one default to an in-memory store would give every request a fresh, empty stream
+# and throw it away at the end: the read models would survive and the truth they
+# were folded from would not. `demo.py` can default to in-memory because it is one
+# process running one scenario; a server cannot.
+STORE_PATH = os.environ.get("RECIPES_EVENTS", str(Path(__file__).parent / "recipes.events.db"))
+event_store = EventStore(path=STORE_PATH, graph=feat_graph())
 
 app = FastAPI(
     title="Recipe kitchen",
@@ -92,6 +103,7 @@ def run_command(apply: Callable[[Kitchen], None]) -> dict[str, Any]:
             observer=lambda name, event: events.append(
                 {"event": name, "data": jsonable_encoder(event)}
             ),
+            store=event_store,
         )
         try:
             apply(kitchen)
@@ -107,7 +119,7 @@ def run_query(apply: Callable[[Kitchen], Any]) -> Any:
     """Run one query in a fresh read session."""
     session: Session = SessionLocal()
     try:
-        return apply(build_kitchen(SqlaAdapter(session=session)))
+        return apply(build_kitchen(SqlaAdapter(session=session), store=event_store))
     finally:
         session.close()
 
