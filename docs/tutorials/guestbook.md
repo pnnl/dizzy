@@ -4,14 +4,20 @@ In this tutorial you build the **guestbook** — the smallest feature that still
 exercises both of DIZZY's loops — from an empty directory. By the end of these first
 steps you'll have described the feature and generated typed schemas from it.
 
+A DIZZY feature is described as two **loops**: a write path, where something happens and
+gets recorded as a permanent fact, and a read path, where those facts are accumulated
+into tables you can query. The guestbook is one lap of each:
+
 ```
 sign_guestbook ─▶ record_signature ─▶ guestbook_signed              (reactivity loop)
 guestbook_signed ─▶ signature_store ─▶ guestbook ─▶ list_signatures (data loop)
 ```
 
-A visitor **signs** the guestbook (a *command*). A *procedure* validates it and emits a
-*fact* (an *event*). A *projection* folds that fact into a *model* (a read table). A
-*query* reads it back out.
+A visitor **signs** the guestbook (a *command*: a request that something happen). A
+*procedure* validates it and emits a *fact* (an *event*: something that did happen, never
+edited or deleted). A *projection* **folds** that fact into a *model* — it applies each
+event in turn to a running read table, so the table is the accumulation of every fact so
+far. A *query* reads that table back out.
 
 !!! note "Validated tutorial"
     Every command and file on this page is executed and checked by
@@ -22,7 +28,10 @@ A visitor **signs** the guestbook (a *command*). A *procedure* validates it and 
 
 ## Before you start
 
-You need DIZZY installed:
+You need DIZZY installed. It is **not published to a package index** — `uv add dizzy`
+fetches an unrelated project that happens to share the name — so install it from a
+checkout or straight from git, as the
+[install instructions](https://github.com/PNNL/dizzy#install) describe:
 
 ```shell
 $ dizzy --help | head -n 1
@@ -54,7 +63,11 @@ the folder):
 That's the whole design. Each entry names a component and, where it matters, how the
 components connect (`record_signature` handles `sign_guestbook` and emits
 `guestbook_signed`; `signature_store` folds `guestbook_signed` into the `guestbook`
-model). Names are `snake_case`; LinkML will compile them to `PascalCase` classes later.
+model). The `adapters: [sqla]` on the model — and the matching `adapter: sqla` on the
+projection and the query — name the storage the model is reached through; `sqla` means
+SQLAlchemy, and an element only ever touches its model through the adapter it declares.
+Names are `snake_case`; LinkML — the schema language DIZZY compiles the `def/` files
+with — will turn them into `PascalCase` classes later.
 
 A quick sanity check that the file is in place:
 
@@ -186,8 +199,10 @@ Your hand-authored attributes are still there.
 ## Step 4 — Compile the type packages
 
 `dizzy generate static` runs LinkML over `def/` to produce **`gen_def`** (Pydantic +
-SQLAlchemy classes) and **`gen_int`** (typed protocols, contexts, and adapters). Both
-land under `lib/python-uv/` as installable packages:
+SQLAlchemy classes) and **`gen_int`** (the interfaces your code is written against: a
+*protocol* per element — the signature its implementation must match — the *context*
+object each one is handed, and the *adapters* that context reaches its model through).
+Both land under `lib/python-uv/` as installable packages:
 
 ```shell
 $ dizzy generate static guestbook.feat.yaml .
@@ -198,7 +213,9 @@ gen_int
 ```
 
 These are generated, not authored — you never edit them. They're the typed contracts the
-next step builds against.
+next step builds against. The same stage also writes a runtime-neutral `gen_schema/`
+beside `def/` — the same commands and queries as JSON Schema, for consumers that aren't
+Python. Which contracts it emits is the `json_schema:` section of `libconfig.yaml`.
 
 ## Step 5 — Package each element
 
@@ -264,14 +281,25 @@ $ git apply edits/record_signature.py.diff edits/signature_store.py.diff edits/l
 
 ## Step 7 — Wire it up and run
 
-Everything DIZZY generates is a typed package; a **host** supplies the glue — the
-database, the event routing, and the calls. That's `demo.py`. It owns an in-memory
-SQLite database, routes each emitted `guestbook_signed` event into the projection, signs
-the guestbook three times, then runs the query:
+Everything DIZZY generates is a typed package; a **host** supplies what the feature-file
+cannot know — the database, and when the work runs. That's `demo.py`. It owns an
+in-memory SQLite database, hands each emitted `guestbook_signed` event to the projection,
+signs the guestbook three times, then runs the query:
 
 ```python title="demo.py"
 --8<-- "tutorials/guestbook/demo.py"
 ```
+
+!!! note "The routing is generated too"
+    The event routing `demo.py` writes by hand — which procedure handles which command,
+    which projection gets which event — is declared in the feature-file, so a fourth
+    stage emits it: `dizzy generate wiring guestbook.feat.yaml .` writes
+    `lib/python-uv/wiring/`, the same elements bound to a `dizzy.engine` engine. It is
+    hand-wired here so you can see every connection once. What stays the host's is
+    persistence and *scheduling* — where a command dispatched by a policy actually runs.
+    Run `dizzy docs` for the wiring stage, and see
+    [`examples/recipes`](https://github.com/PNNL/dizzy/tree/main/examples/recipes) for a
+    host built on generated wiring.
 
 Sync the generated workspace and run it:
 
@@ -289,3 +317,14 @@ Guestbook (newest first):
 projection folded it into a model, and a query read it back — both of DIZZY's loops,
 generated from a single feature-file and a handful of edits you made to the parts only
 you could decide.
+
+## Where next
+
+- [A policy that consults a query](library.md) — the missing half of the reactivity
+  loop: a policy that reads state to decide which command to dispatch.
+- [A streaming agent turn](agent.md) — environment and telemetry, the two context
+  inputs a procedure gets besides its emitters.
+- [Feature-file format](../reference/SPECIFICATION.md) — every section and field the
+  `.feat.yaml` accepts.
+- `dizzy docs` — the CLI manpage, including the `generate wiring` stage this tutorial
+  stops short of.

@@ -1,12 +1,19 @@
-# sim/ — Simulate Roleplay Playbook
+# Simulate roleplay playbook
 
-We dry-run `dizzy simulate` **by hand** before writing it. Human + agent play the
-harness and the component LLMs against a real feature-file, following the rules the
-real harness will enforce. The experiment has two products:
+`dizzy simulate` now ships — run it as
+`dizzy simulate <feat_file> <scenario_file> [session_path]`, with the reference
+feature-file and scenarios in
+[`examples/simulate/`](https://github.com/PNNL/dizzy/tree/main/examples/simulate). This page is
+the design record that produced it: before any code existed, a human and an agent dry-ran the
+command **by hand**, playing the harness and the component LLMs against a real feature-file
+under the rules the real harness would go on to enforce. It is kept in the present tense of the
+experiment, because the rulings below are the reasoning the implementation inherited.
+
+The experiment had two products:
 
 1. **Findings about the design** (`library.feat.yaml`) — exactly what a real run would emit.
 2. **Findings about simulate itself** — the prompt shape, the tool-call protocol, the
-   query semantics, the session-log format. These feed back into plan `pl-f395`.
+   query semantics, the session-log format. These fed back into plan `pl-f395`.
 
 Requirements being exercised: `dizzy docs cli § dizzy simulate`.
 
@@ -67,7 +74,7 @@ Requirements being exercised: `dizzy docs cli § dizzy simulate`.
    "head", no concrete action. The Director had never reviewed it; the gate makes
    that review a forced step rather than a missing one.)
 
-## Turn protocol (the draft `--manual` contract)
+## Turn protocol (the draft manual-play contract)
 
 Each activation is one exchange:
 
@@ -108,7 +115,8 @@ session log, and schedules consequences.
 
 ## Session logs
 
-One file per run: `sim/sessions/<scenario>__<run>.jsonl`. Every line:
+One file per run; the shipped command writes wherever its `session_path` argument points, and
+the reference runs live under `examples/simulate/sessions/<scenario>__<run>.jsonl`. Every line:
 `{id, parentId, type, ...}`. Entry types (amended during run 1):
 - `header` — feat-file + scenario + level + query mode + step budget + format version.
 - `ruling` — a Director decision on a protocol ambiguity. **The harness stops and asks

@@ -101,17 +101,22 @@ state is left behind, the failed attempt is recorded as a fact, and the batch re
 
 ## Run it
 
-The generated `lib/python-uv/` is a uv workspace. Sync it once, then run `demo.py`
-inside that environment — from the repository root:
+The generated `lib/python-uv/` is a uv workspace. Its compiled type packages
+(`gen_def`/`gen_int`) are gitignored but every element package depends on them, so a
+fresh clone must compile them before the workspace resolves. Then sync once and run
+`demo.py` inside that environment — from the repository root:
 
 ```bash
+uv run dizzy generate static examples/recipes/recipes.feat.yaml examples/recipes
 uv sync --project examples/recipes/lib/python-uv
 uv run --project examples/recipes/lib/python-uv python examples/recipes/demo.py
 ```
 
-The generated `wiring` package depends on DIZZY (it is the artifact that imports
-`dizzy.engine`), and this workspace resolves that against the checkout it was
-generated from — so the runtime arrives with the sync, no extra flags.
+Everything else is committed, including the generated `wiring` package. That package
+depends on DIZZY (it is the artifact that imports `dizzy.engine`), and this workspace
+resolves that against the checkout it was generated from — so the runtime arrives with
+the sync, no extra flags. Regenerating past `static` changes that: see
+[Rebuild it from scratch](#rebuild-it-from-scratch).
 
 Expected output (abridged):
 
@@ -225,11 +230,13 @@ uv run examples/recipes/build_docs.py   # writes recipes.typ and recipes.pdf
 ## Rebuild it from scratch
 
 `def/` stubs and the `src/` implementations inside `lib/` are **never overwritten**, so
-to regenerate them too, remove them.
+to regenerate them too, remove them. Reset only the compiled packages — a blanket
+`rm -rf examples/recipes/lib` also discards the committed element implementations and
+the generated `wiring/`, which the steps below do not write back.
 
 ```bash
 # from the repo root
-rm -rf examples/recipes/lib
+rm -rf examples/recipes/lib/python-uv/gen_def examples/recipes/lib/python-uv/gen_int
 
 # 1. scaffold def/ LinkML schemas + libconfig.yaml (idempotent; won't clobber edits)
 uv run dizzy generate definitions examples/recipes/recipes.feat.yaml examples/recipes
@@ -247,12 +254,16 @@ uv run dizzy generate libraries examples/recipes/recipes.feat.yaml examples/reci
 #      policy/advance_ready_batches/
 
 # 6. generate the wiring: the binding from those elements to the runtime.
-#    --dizzy-source points the generated package's dizzy dependency at this
-#    checkout; a project depending on a released DIZZY omits it.
+#    Stage 4 is not optional after stage 3: `generate libraries` rewrites the
+#    workspace pyproject.toml, dropping the `wiring` member and the `dizzy`
+#    source entry that only this stage writes. --dizzy-source (resolved from the
+#    generated workspace root) points that entry at this checkout; a project
+#    outside this checkout omits it and gets the canonical git source instead.
 uv run dizzy generate wiring examples/recipes/recipes.feat.yaml examples/recipes \
     --dizzy-source ../../../..
 ```
 
-For the minimal feature and the full four-stage workflow, start with
-[`guestbook/`](../guestbook/); for a single policy that queries, see
-[`library/`](../library/). Then `dizzy docs authoring`.
+For the minimal feature and the full four-stage workflow, start with the
+[guestbook tutorial](../../docs/tutorials/guestbook.md); for a single policy that
+queries, see the [library tutorial](../../docs/tutorials/library.md). Then
+`dizzy docs authoring`.

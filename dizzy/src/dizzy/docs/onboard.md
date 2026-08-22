@@ -47,7 +47,8 @@ it may call, the events it may emit; exceeding declared scope is a type error.
 Rules of engagement for agents:
 
 1. Never encode design decisions only in conversation — put them in the feature-file.
-2. Never hand-edit generated interfaces (`gen_def`/`gen_int`); regenerate instead.
+2. Never hand-edit generated interfaces (`gen_def`/`gen_int`) or the generated
+   `wiring/` package; regenerate instead.
 3. Files you author (`def/` schemas, `libconfig.yaml`, implementation stubs in `lib/`)
    are never clobbered by the generator — they are yours.
 
@@ -95,8 +96,10 @@ Bad (and why):
 | Step | You want to... | Reach for | Status |
 |---|---|---|---|
 | Onboard | Orient yourself / a fresh agent session | `dizzy onboard`, `dizzy docs` | shipped |
-| Design | Author the feature-file | `dizzy docs authoring`, then `lint`, `simulate` | docs shipped; rest planned |
-| Build | Scaffold schemas, generate types + packages | `dizzy generate definitions` → `static` → `libraries` | shipped (python-uv) |
+| Design | Author the feature-file | `dizzy docs authoring` | shipped |
+| Design | Execute the design before implementing it | `dizzy simulate <feat> <scenario>` | shipped (level 0) |
+| Design | Check the feature-file deterministically | `lint` | planned |
+| Build | Scaffold schemas, generate types + packages, bind them to the engine | `dizzy generate definitions` → `static` → `libraries` → `wiring` | shipped (python-uv) |
 | Change | Assess a feature-file edit | `diff`, `impact`, `compat` | planned |
 | Migrate | Replace a model after a schema change | `rebuild <model>` | planned |
 | Run | Observe / compare runtime vs. design | `trace`, `drift` | planned |
@@ -109,7 +112,15 @@ The shipped path today (run in order, authoring between each step):
 dizzy generate definitions <feat_file> <output_dir>   # scaffold def/ + libconfig.yaml — then YOU author field detail
 dizzy generate static      <feat_file> <output_dir>   # compile def/ → gen_def + gen_int type packages
 dizzy generate libraries   <feat_file> <output_dir>   # per-runtime element packages — then YOU implement the stubs
+dizzy generate wiring      <feat_file> <output_dir>   # bind the elements to a dizzy.engine engine; emits the HostApp
 ```
+
+The wiring package (`lib/python-uv/wiring/`) is a pure function of the feature-file:
+it registers each procedure under the command it handles, each projection under the
+event it folds, each policy under the event it reacts to. Never hand-edit it —
+regenerate, and pass an override by name if one element needs a different binding.
+What you author around it is the host: which database, which adapter instance, and
+how the command queue gets drained.
 
 For the full per-command reference and roadmap: `dizzy docs cli`.
 For the authoring contract (what you write after each stage): `dizzy docs authoring`.

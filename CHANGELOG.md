@@ -23,8 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scenario (level 0).
 - **`dizzy onboard` / `docs` / `config`** — agent-facing project overview, the
   CLI + authoring documentation, and a config template.
-- **Worked examples**: a fully implemented, runnable `guestbook`, plus
-  `recipes`, `library`, and `agent` feature-files.
+- **Worked example**: `examples/recipes`, a multi-step policy-driven cascade; the
+  guestbook, library and agent features ship as validated walkthroughs under
+  `docs/tutorials/`, and `examples/simulate` holds the reference scenarios for
+  `dizzy simulate`.
 - Trunk-based CI (`ci.yml`): tests gate every PR; ruff lint/format and `ty`
   type checks run as advisory signal.
 - Tag-driven release pipeline (`release.yml`): a `v*` tag builds the sdist +
@@ -46,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every policy-dispatched command to the shell, so **the shell is part of the
   defined semantics**: `st` (one lane) is sequentially consistent, `mp` (N
   workers, at-least-once) deliberately is not.
-  `tests/engine/test_conformance.py` is the contract and asserts which guarantee
-  each one claims.
+  `dizzy/tests/engine/test_conformance.py` is the contract and asserts which
+  guarantee each one claims.
 - **`dizzy generate wiring`** — a fourth pipeline stage emitting
   `lib/<runtime>/wiring/`: the declared elements bound to a `dizzy.engine` engine
   plus the `HostApp` a shell resolves from `$DIZZY_HOST_APP`. The wiring is a
@@ -63,7 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dizzy.engine.sqla` — SQLite read-model cache management (the completion
   marker, and why a crashed refold must not look current), covered by tests
   including the crash-then-retry path.
-
 - **JSON Schema contracts** — `dizzy generate static` now emits runtime-neutral JSON
   Schema into `gen_schema/`, one document per `def/` source, via LinkML's
   `gen-json-schema`. Driven by a new optional `json_schema` section in

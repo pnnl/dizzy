@@ -1,16 +1,10 @@
 # DIZZY
 
-DIZZY is a methodology and code generator for event-sourced software. A business domain
-is expressed in a single artifact — the **feature-file** — that is both literate design
-and the source of a checkable implementation. From it, DIZZY generates typed contracts,
-deployment, stubs, and tests as redistributable libraries across multiple runtimes.
+DIZZY generates event-sourced software from a single readable file — one `.feat.yaml` **feature-file** that is both the design and the source of the implementation.
 
-Two loops define the model:
+**New to event sourcing? Start with [What DIZZY is (and why events)](explanation/what-is-dizzy.md)** — about ten minutes, nothing to install. Then **[Build a guestbook](tutorials/guestbook.md)**, which takes a feature from an empty directory to a running demo.
 
-```
-Commands → Procedures → Events → Policies  → Commands   (reactivity loop)
-Events   → Projections → Models → Queries  → Procedures (data loop)
-```
+> ⚠️ **Research code.** DIZZY is a work in progress. The Python (`python-uv`) path is the most complete; the `rust-cargo` and `typescript-npm` runtimes are experimental.
 
 ## Documentation
 
@@ -20,7 +14,7 @@ This site is organized along the [Diátaxis](https://diataxis.fr/) framework:
 - **[How-to guides](how-to/index.md)** — task-oriented recipes for specific goals.
 - **[Reference](reference/SPECIFICATION.md)** — the feature-file format spec and the
   generated [code API](reference/api/index.md) reference.
-- **[Explanation](explanation/simulate-playbook.md)** — background, design records, and
+- **[Explanation](explanation/what-is-dizzy.md)** — background, design records, and
   the whitepaper.
 
 > The CLI's own documentation ships with the tool: run `dizzy docs`, `dizzy docs authoring`,

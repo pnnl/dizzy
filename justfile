@@ -1,5 +1,8 @@
+# The `gen` extra, not a bare `.`: typer and linkml moved behind it when the engine
+# shells landed, and cli.py imports typer at module scope — a core-only install puts a
+# `dizzy` on PATH that dies on ModuleNotFoundError before it can print --help.
 install:
-    uv tool install --editable .
+    uv tool install --editable ".[gen]"
 
 gen-feat-pydantic:
     uv run gen-pydantic dizzy/src/dizzy/def/feat.yaml > dizzy/src/dizzy/feat_schema.py

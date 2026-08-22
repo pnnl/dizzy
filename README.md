@@ -3,30 +3,40 @@
 > ⚠️ **Research code.**
 > DIZZY is a work in progress.
 > The Python (`python-uv`) path is the most complete;
->  the `rust-cargo` and `typescript-npm` runtimes are experimental.
+> the `rust-cargo` and `typescript-npm` runtimes are experimental.
 
-A business Domain can be expressed a single artifact that is the litare design and source of implementation.
-Readable as prose, but precise enough to generate a checkable implementation against.
-As the entry point of change - the system stays tractable as the domain grows.
+DIZZY generates event-sourced software from a single readable file.
 
-DIZZY defines a single feature-file that declares every component of the domain: 
-commands, procedures, events, policies, projections, models, queries and queriers.
+You declare a feature once — the requests it accepts, the facts it records, the tables
+it derives, and how they connect — in one `.feat.yaml` **feature-file**. `dizzy generate`
+turns that into LinkML schemas, typed contracts, JSON Schema contracts, per-runtime
+implementation stubs, and the runtime wiring that binds them together. You fill in the
+bodies; you never hand-write the plumbing, and the design cannot drift from the code
+because the code is generated from the design.
 
-Code, typed contracts, deployment, stubs and tests are generated from the feature file as redistributable libraries in multiple languages.
-
-The goal is **reproducible, redistributable and literate software**: features defined as data,
-with no architecture or database baked in,
-so the same definition can target different runtimes and deployments.
+**New to event sourcing?** Start with
+[What DIZZY is (and why events)](docs/explanation/what-is-dizzy.md) — about ten minutes,
+nothing to install.
 
 
-## Why DIZZY ?
+## Why DIZZY?
 
-The core hypothesis is that programs built to service DIZZY features will serve all libraries implemented in DIZZY.
+Because a feature declared as data can be read by more than the compiler. The
+feature-file is not a config file the generator consumes and forgets — it stays the
+system's map, and every tool DIZZY grows reads the same map.
 
-If and when built for DIZZY, each additional system applies to all DIZZY libraries.
+That is the bet: work done once against the feature-file format applies to every feature
+ever written in it. A generator for a new runtime targets the format, not your codebase.
+So does the engine that schedules a feature at runtime, and so would a deployment
+generator or a telemetry binding — each one written once, then available to every DIZZY
+feature rather than re-integrated per project.
 
-- A deployment for k8s; reducing the upfront cost of deployment for new projects.
-- Telemetry - metrics and traces; ensuring deployed systems are transparent to operators without bespoke integration.
+The cost of that bet is that the format has to carry the whole design, which is what the
+feature-file is for and why it is the API of the ecosystem.
+
+> Shipped today: schema, contract, stub and wiring generation (`python-uv` most complete),
+> plus the `dizzy.engine` runtime and its two scheduling shells. Deployment generation and
+> a telemetry binding are the roadmap in `dizzy docs`, not working code.
 
 ## Install
 
@@ -52,7 +62,7 @@ uv add "dizzy[mp]  @ git+https://github.com/PNNL/dizzy"   # running a fleet: the
 uv add "dizzy      @ git+https://github.com/PNNL/dizzy"   # the engine layer alone
 ```
 
-Pin a release by appending a tag (`...dizzy@v0.2.0`); tagged builds are attached
+Pin a release by appending a tag (`...dizzy@v0.1.1`); tagged builds are attached
 to [GitHub Releases](https://github.com/PNNL/dizzy/releases) as wheels.
 
 The `gen` extra carries the generator (LinkML, the CLI) and is what authoring
@@ -194,8 +204,6 @@ Guestbook (newest first):
 
 Every command, edit, and output in that tutorial is executed and checked by
 `just tutorials-check`. For more committed examples, see [`examples/`](examples/).
-
-See [`examples/`](examples/) for the full walkthrough.
 
 ## For AI agents
 

@@ -111,9 +111,9 @@ git diff def/commands.yaml > commands.yaml.diff   # → docs/tutorials/<name>/ed
 ```
 
 Two phases mirror the tutorial: capture `def/**.yaml` edits against the scaffold from
-`generate definitions`, and capture `src/*.py` edits against the stubs from
-`generate libraries` (run `generate static` then `generate libraries`, commit, then edit
-and diff).
+`generate definitions`, and capture the implementation edits under
+`lib/<runtime>/<kind>/<name>/src/` against the stubs from `generate libraries` (run
+`generate static` then `generate libraries`, commit, then edit and diff).
 
 Tidy the patch for rendering: strip git's `diff --git`/`index` preamble so the snippet is
 a plain unified diff (keep everything from the first `--- ` line). `git apply` accepts

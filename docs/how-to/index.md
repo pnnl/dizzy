@@ -13,5 +13,5 @@ Task-oriented recipes for getting specific things done with DIZZY.
 Common tasks today:
 
 - **Author a feature** → `dizzy docs authoring`
-- **Generate from a feature-file** → `dizzy generate definitions|static|libraries <feat> <out>`
+- **Generate from a feature-file** → `dizzy generate definitions|static|libraries|wiring <feat> <out>`
 - **See the full command reference** → `dizzy docs` (CLI manpage & roadmap)

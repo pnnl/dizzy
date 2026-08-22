@@ -8,13 +8,17 @@ commands; data: queries answered from the event store).
 
 ## Running a scenario
 
+Run from this directory; the paths below are relative to it.
+
 ```bash
-dizzy simulate library.feat.yaml scenarios/catalog_one.scenario.yaml sessions/catalog_one.jsonl
-dizzy simulate library.feat.yaml scenarios/borrow_available_book.scenario.yaml sessions/borrow.jsonl
+mkdir -p sessions   # not in the repo: its contents are ignored, so a clone has no sessions/
+uv run dizzy simulate library.feat.yaml scenarios/catalog_one.scenario.yaml sessions/catalog_one.jsonl
+uv run dizzy simulate library.feat.yaml scenarios/borrow_available_book.scenario.yaml sessions/borrow.jsonl
 ```
 
 Pass `--verbose` to stream LLM output. Sessions are written to `sessions/`
-(gitignored — they are ephemeral run artifacts).
+(gitignored — they are ephemeral run artifacts); the session path is opened for
+append, never created, so the directory must exist first.
 
 ## Scenarios
 

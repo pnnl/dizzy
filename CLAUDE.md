@@ -50,8 +50,9 @@ how often a task needs them:
    sets in `$DIZZY_HOST_APP`, or as an argument (`runners=`, `event_classes=`).
    The engine owns the command queue's *contents* but not its *scheduling*: a policy's
    command goes to the shell, so **the shell is part of the defined semantics** — `st`
-   is sequentially consistent, `mp` deliberately is not. `tests/engine/test_conformance.py`
-   is the contract, and asserts which guarantee each one claims.
+   is sequentially consistent, `mp` deliberately is not.
+   `dizzy/tests/engine/test_conformance.py` is the contract, and asserts which guarantee
+   each one claims.
    Deps: core is pyyaml + pydantic (the store round-trips events through the generated
    classes); the generator's tree lives behind the `gen` extra, `mp`'s broker behind
    `mp`, and SQLAlchemy behind `sqla` — the engine itself carries no ORM, because it
@@ -64,9 +65,14 @@ how often a task needs them:
 - `dizzy generate definitions|static|libraries|wiring <feat> <out>` — the shipped
   pipeline (legacy aliases: `def`/`gen`/`lib`). `wiring` emits `lib/<runtime>/wiring/`:
   the elements bound to a `dizzy.engine` engine, plus the `HostApp` a shell resolves.
-  It is the only generated package that depends on DIZZY itself.
-- `dizzy docs [cli|authoring]` — print documentation; `dizzy config` — config template.
-- Roadmap commands (`lint`, `diff`, `impact`, `simulate`, …) are specified in
+  It is the only generated package that depends on DIZZY itself. `static` also emits
+  runtime-neutral JSON Schema into `gen_schema/`, selected by libconfig's optional
+  `json_schema:` section.
+- `dizzy docs [cli|authoring]` — print documentation; `dizzy config` — config template;
+  `dizzy onboard` — the agent-facing overview.
+- `dizzy simulate <feat> <scenario> [session]` — LLM-driven execution of a feature-file
+  against a scenario (level 0); reference scenarios live in `examples/simulate/`.
+- Roadmap commands (`lint`, `diff`, `impact`, …) are specified in
   `dizzy/src/dizzy/docs/cli.md` and tracked as seeds.
 
 ## Conventions & boundaries
@@ -76,8 +82,11 @@ how often a task needs them:
   `dizzy onboard` — edit them there. The `docs/` tree is the **mkdocs Diátaxis site**
   (`just docs-serve` / `just docs-build`); its `reference/api/` pages are generated from
   the code by `gen_ref_pages.py` (mkdocstrings).
-- Quality gates: `just test` (pytest + syrupy snapshots; `just test-update` to
-  re-snapshot intentionally) and `just check` (ty).
+- Quality gates: `just ci` runs what CI runs — `just lint`, `just fmt-check`,
+  `just check` (ty, all advisory) then `just test` (pytest + syrupy snapshots, the gate;
+  `just test-update` to re-snapshot intentionally). Two slower checks sit outside
+  `just ci`: `just examples-check` (regenerate `examples/recipes` and fail on drift) and
+  `just tutorials-check` (run every `docs/tutorials/*.md` end to end under byexample).
 - Gotcha: despite the Seeds section below, `sd prime` does **not** accept
   `--format` — run it bare. (`--format` works on `sd list`, `sd show`, etc.)
 

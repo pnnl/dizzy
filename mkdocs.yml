@@ -57,6 +57,7 @@ nav:
       - Feature-file format: reference/SPECIFICATION.md
       - Code API: reference/api/
   - Explanation:
+      - What DIZZY is: explanation/what-is-dizzy.md
       - Simulate playbook: explanation/simulate-playbook.md
       - Whitepaper: explanation/whitepaper.md
 

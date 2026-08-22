@@ -18,12 +18,38 @@ replaceable components sandwiched between deterministic checks.
 
 ---
 
+## Installing
+
+**DIZZY is not published to a package index** — the name there belongs to an unrelated
+project — so a dependent names the git source explicitly:
+
+```
+uv add "dizzy[gen] @ git+https://github.com/PNNL/dizzy"
+```
+
+The install is split so a worker process does not inherit a code generator it will never
+call:
+
+- core (`dizzy`) — pyyaml + pydantic. All `dizzy.engine` costs: the store round-trips
+  events through the generated Pydantic classes.
+- `gen` — linkml, openai, typer. The authoring install, and what the `dizzy` CLI itself
+  needs; without it the CLI cannot start.
+- `st` / `mp` — the scheduling shells. `st` is stdlib-only and declared so the name is
+  spellable; `mp` pulls dramatiq/redis and the OpenTelemetry *API* (the SDK and its
+  exporters stay the host's).
+- `sqla` — the read-model conveniences in `dizzy.engine.sqla`. The engine itself carries
+  no ORM.
+- `all` — every extra above.
+
+---
+
 ## Lifecycle overview
 
 | Phase | Commands | Status |
 |---|---|---|
 | Onboarding | `onboard` | **shipped** |
-| Design | `lint`, `simulate`, `diff`, `impact` | planned |
+| Design | `simulate` | **shipped** (level 0; the fidelity levels below are the end state) |
+| Design | `lint`, `diff`, `impact` | planned |
 | Build | `generate` | **shipped** (python-uv; rust/ts experimental) |
 | Build | `scaffold`, `verify` | planned (stub scaffolding ships inside `generate libraries`) |
 | Change | `diff`, `impact`, `compat`, `rebuild` | planned |
@@ -98,8 +124,10 @@ stubs; it never touches an existing one.
 
 Read `libconfig.yaml` and package every element (procedure/policy/projection/query)
 into its own redistributable per-runtime package with a real-signature implementation
-stub in `src/` for you to fill in. Writes the workspace manifest; a generated
-`lib/<runtime>/` is self-contained and can be lifted out and shipped on its own.
+stub in `src/` for you to fill in. Writes the workspace manifest; through this stage a
+generated `lib/<runtime>/` is self-contained and can be lifted out and shipped on its own
+— the `wiring/` package added by the next stage is the one thing that reaches back for
+DIZZY.
 
 **Open requirement:** must work end-to-end in **at least two target languages** (this
 is what proves the language-agnostic claim). Today `python-uv` is complete;
@@ -111,6 +139,11 @@ Emit the binding between the generated elements and the runtime (`dizzy.engine`)
 `lib/<runtime>/wiring/` — an installable workspace package holding `build_runtime` and
 the `HostApp` a scheduling shell resolves from `$DIZZY_HOST_APP`. Requires the element
 packages; run `libraries` first.
+
+The wiring imports every element package, so it can only be emitted for a runtime that
+has them: today that is `python-uv` alone (`lib/python-uv/wiring/`), and the command
+exits nonzero if `libconfig.yaml` binds no element to `python-uv`. `rust-cargo` and
+`typescript-npm` stop at types + stubs.
 
 This is the only generated package that depends on DIZZY itself, and **DIZZY is not
 published to a package index** — the name there belongs to an unrelated project. So the
@@ -132,8 +165,11 @@ Always overwritten, like every other generated interface. To specialize an eleme
 binding, pass an override by name rather than editing the file:
 
 ```python
-build_runtime(services, overrides={"detect_faces": my_lazy_runner})
+build_runtime(services, Resources(adapters=..., overrides={"detect_faces": my_lazy_runner}))
 ```
+
+An override is looked up by element name on the `Resources` a host passes in, so the same
+mapping serves `build_engine(queue, store, resources)` directly.
 
 That seam exists because real hosts need it — a capability-pooled element a node must not
 import, a query that has to run on a short-lived session — and an app that forks the
@@ -147,6 +183,26 @@ under either scheduling shell.
 
 > The legacy verbs `dizzy def` / `dizzy gen` / `dizzy lib` are deprecated aliases for
 > `generate definitions` / `generate static` / `generate libraries`.
+
+## dizzy simulate <feat_file> <scenario_file> [session_path]
+
+LLM-driven execution of a feature-file against a scenario, with no code generation and no
+deployment. Ships at **fidelity level 0** (narrative): component descriptions are the
+prompts, payloads are prose sketches rather than slot-conformant data. Levels 1 and 2, and
+the `--exec`/`--manual` agent modes, are specified under Roadmap below.
+
+The scenario file (`*.scenario.yaml`) supplies the initial stimulus: a description plus an
+ordered list of starting commands. `session_path` defaults to `session.jsonl` and receives
+the append-only JSONL session log; findings recorded during the run are counted on exit.
+`examples/simulate/` holds the reference feature-file and scenarios.
+
+- `--provider` — `openrouter` (default) | `ollama` | `unsloth`.
+- `--model` — model override; the provider's default when omitted.
+- `--verbose` / `-v` — stream LLM output as it arrives.
+
+Descriptions are the executable surface here: author them as YAML block scalars with
+enough detail to execute (see `dizzy docs authoring`, "Descriptions Are Design"). A
+description an LLM misexecutes is one a new engineer will misread.
 
 ## dizzy docs [page]
 
@@ -242,10 +298,11 @@ Four tiers of discovery, run in order, each scoping the next:
 Integration: `--emit seeds` writes the worklist as seeds tasks in topological order.
 Keep the emitter behind a small interface so other orchestrators can be added.
 
-## dizzy simulate
+## dizzy simulate — end state
 
-LLM-driven execution of a feature-file with **no code generation and no deployment**.
-Component descriptions (prose / pseudocode / mermaid) are the prompts — author them as
+Level 0 ships (see the shipped section above); everything here describes where the command
+is going. LLM-driven execution of a feature-file with **no code generation and no
+deployment**. Component descriptions (prose / pseudocode / mermaid) are the prompts — author them as
 YAML block scalars (`|`/`>`) with enough detail to execute (see `dizzy docs authoring`,
 "Descriptions Are Design").
 
@@ -271,7 +328,7 @@ Architecture (the constraints live in the harness, not the prompt):
 - Termination: step budget + repetition detector (same component, same message shape,
   N times → finding: possible livelock).
 
-Fidelity levels:
+Fidelity levels (planned as a `--level` flag; today the command always runs level 0):
 - `--level 0` narrative: no payloads; does the story connect; finds missing layers/dead ends.
 - `--level 1` slot-conformant payloads; finds contract mismatches between components.
 - `--level 2` stateful: models materialize as JSON blobs in the session file (caches of
@@ -293,7 +350,7 @@ whose parent is an earlier node, in place, full history in one file.
 Agent compatibility (OpenCode, Claude Code, pi — minimal by design):
 the harness never embeds a provider SDK as its only path. Three modes:
 1. `--provider <api>` direct API calls (config-selected model; cheap models are fine
-   because each call is narrow and the harness enforces structure).
+   because each call is narrow and the harness enforces structure). **Shipped.**
 2. `--exec '<cmd>'` subprocess mode: prompt on stdin, JSON tool-call response on stdout —
    any agent CLI that can run non-interactively plugs in.
 3. `--manual` prints the prompt and awaits a JSON response on stdin (human or any agent

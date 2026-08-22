@@ -17,8 +17,8 @@ is the whole point.
 
 !!! tip "New to DIZZY?"
     If you haven't yet, do the [Build a guestbook](guestbook.md) tutorial first — it
-    covers the generation pipeline (definitions → static → libraries) and the file
-    conventions this one moves through more quickly.
+    covers the generation pipeline (definitions → static → libraries, with wiring as a
+    fourth stage) and the file conventions this one moves through more quickly.
 
 !!! note "Validated tutorial"
     Every command and file here is executed and checked by `just tutorials-check` (via
@@ -27,7 +27,11 @@ is the whole point.
 
 ## Before you start
 
-DIZZY installed, and the tutorial's assets in a fresh directory:
+DIZZY installed (it is not on a package index — see the
+[install instructions](https://github.com/PNNL/dizzy#install)), and the tutorial's
+assets — the feature-file, `demo.py`, and the patches under `edits/` — in a fresh
+directory. They ship under the
+[tutorial source](https://github.com/PNNL/dizzy/tree/main/docs/tutorials/library):
 
 ```shell
 $ dizzy --help | head -n 1
@@ -161,7 +165,7 @@ $ git apply edits/record_hold.py.diff edits/process_return.py.diff edits/send_no
 
 ## Step 5 — Wire it up and run
 
-The host's `demo.py` owns persistence and the routing. The interesting part is how it
+The host's `demo.py` owns persistence and scheduling. The interesting part is how it
 binds the query into the policy's context — a closure over the read adapter — so the
 policy calls `context.query.get_next_hold(...)` exactly the way it calls an emitter:
 
@@ -191,5 +195,17 @@ Two patrons hold `dune`; when it's returned the policy queries the queue and not
 queries, finds nobody, and dispatches nothing — the conditional dispatch that makes
 policies-with-queries the expressive heart of the reactivity loop.
 
-For another worked feature — a multi-step, policy-driven cascade — see
-[`examples/recipes`](https://github.com/PNNL/dizzy/tree/main/examples/recipes).
+The routing this `demo.py` hand-wires — event to policy, and the policy's command back
+into a procedure — is what `dizzy generate wiring` emits for you as
+`lib/python-uv/wiring/`: the elements bound to a `dizzy.engine` engine. Hand-wiring it
+here calls the notify chain in-process; under the engine a dispatched command lands on a
+queue, and *where* it runs is the scheduling shell's choice — part of DIZZY's defined
+semantics rather than a detail of this file. Run `dizzy docs` for that stage.
+
+## Where next
+
+- [A streaming agent turn](agent.md) — environment and telemetry as declared context
+  inputs.
+- [`examples/recipes`](https://github.com/PNNL/dizzy/tree/main/examples/recipes) — a
+  multi-step, policy-driven cascade, and a host built on generated wiring rather than
+  the hand-written routing above.

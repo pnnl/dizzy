@@ -22,6 +22,15 @@ around what you learned, then let the generated contract replace your scratch sc
     LLM, so it needs an API key and its output varies; those blocks are shown for
     illustration and are *not* executed.
 
+## Before you start
+
+Work in a fresh directory with DIZZY installed — it is not on a package index, so follow
+the [install instructions](https://github.com/PNNL/dizzy#install). This tutorial's assets
+— `agent.feat.yaml`, `example.py`, `demo.py`, and the patches under `edits/` — ship under
+the [tutorial source](https://github.com/PNNL/dizzy/tree/main/docs/tutorials/agent); grab
+that folder to follow along. The live run additionally needs credentials for an
+OpenAI-compatible provider (Step 6).
+
 ## Step 1 — Start from the API
 
 Before modelling anything, you learn the provider's streaming API by hand. This throwaway
@@ -156,7 +165,7 @@ The live run needs provider credentials. Put them in a `.env` beside `demo.py`:
 ```bash title=".env"
 OPENAI_API_KEY=sk-...
 OPENAI_API_BASE=https://api.your-provider.example/v1
-OPENAI_MODEL=claude-opus-4-8
+OPENAI_MODEL=google/gemma-4-26b-a4b-it
 ```
 
 Then run it (this calls the live provider, so the reply and token counts will differ each
@@ -182,5 +191,16 @@ The tokens streamed live through telemetry; the event log recorded only the two 
 facts. That separation — transport vs. provenance — is the point of giving `run_agent_turn`
 both telemetry sinks *and* events.
 
-The full source for every step on this page lives in the tutorial's own asset folder
-(`docs/tutorials/agent/` — `example.py`, `demo.py`, and the patches under `edits/`).
+The full source for every step on this page lives in the tutorial's own
+[asset folder](https://github.com/PNNL/dizzy/tree/main/docs/tutorials/agent) —
+`example.py`, `demo.py`, and the patches under `edits/`.
+
+## Where next
+
+- [`examples/recipes`](https://github.com/PNNL/dizzy/tree/main/examples/recipes) — a
+  multi-step, policy-driven cascade whose host runs on generated wiring bound to a
+  `dizzy.engine` engine, rather than invoking elements by hand as `demo.py` does here.
+- `dizzy docs` — the CLI manpage, including the `generate wiring` stage that emits that
+  binding.
+- [Feature-file format](../reference/SPECIFICATION.md) — the full `.feat.yaml`
+  reference, including the `environment:` and `telemetry:` sections this page uses.

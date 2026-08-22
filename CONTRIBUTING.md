@@ -10,10 +10,21 @@ DIZZY uses [`uv`](https://docs.astral.sh/uv/) and [`just`](https://just.systems/
 ```sh
 git clone https://github.com/PNNL/dizzy
 cd dizzy
-uv sync            # install deps + dev tools into .venv
-just install       # optional: install the `dizzy` CLI as an editable tool
-dizzy onboard      # read this before touching generators
+uv sync                # install deps + dev tools into .venv
+uv run dizzy onboard   # read this before touching generators
 ```
+
+That is enough to work in the repo: the dev group installs `dizzy[gen,mp,sqla,st]`, so
+`uv run dizzy` has every generator. To put the CLI on your PATH instead, install it with
+the `gen` extra — the CLI itself lives behind it, so a bare install has no `typer` and
+cannot start:
+
+```sh
+uv tool install --editable ".[gen]"
+```
+
+DIZZY is not published to a package index; the git repository and the GitHub Release
+wheels are the distribution.
 
 ## The workflow
 
@@ -45,17 +56,22 @@ We track issues with [Seeds](https://github.com/jayminwest/seeds). Run
   while we adopt them across the codebase. Please still fix what you can —
   `just fmt` auto-formats, and `just lint` shows lint findings.
 - If you intentionally re-snapshot, use `just test-update` and review the diff.
-- Touching generators? Regenerate examples and confirm no drift:
-  `just examples-check`.
+- Touching generators? Two slower checks sit outside `just ci`: `just examples-check`
+  regenerates `examples/recipes` and fails on any drift in tracked files, and
+  `just tutorials-check` runs every tutorial under `docs/tutorials/` end to end in a
+  throwaway sandbox (via byexample), checking each command's real output against the
+  page. A change to the four generate stages usually needs both.
 
 ## Documentation
 
-- `dizzy/src/dizzy/docs/cli.md` and `dizzy/src/dizzy/docs/authoring.md` are the
-  authoritative tool-shipped docs (printed by `dizzy docs` / `dizzy onboard`, shipped
-  in the wheel — **edit them in the package**). When scope changes, change `cli.md`
-  first, then the seeds.
+- `dizzy/src/dizzy/docs/cli.md`, `authoring.md` and `onboard.md` are the authoritative
+  tool-shipped docs (printed by `dizzy docs` / `dizzy docs authoring` / `dizzy onboard`,
+  shipped in the wheel — **edit them in the package**). When scope changes, change
+  `cli.md` first, then the seeds.
 - `docs/` is the mkdocs Diátaxis site (`just docs-serve` / `just docs-build`); its
-  `reference/api/` pages are generated from the code via mkdocstrings.
+  `reference/api/` pages are generated from the code via mkdocstrings. Every page under
+  `docs/tutorials/` is executed by `just tutorials-check`, so its shell blocks must show
+  the tool's real output — see `docs/how-to/add-a-validated-tutorial.md`.
 - The whitepaper Typst files are maintainer-authored; you may fact-check them, but
   don't author them.
 
