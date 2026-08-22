@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `output_dir:` defaulting to `gen_schema`). Omitting the section emits nothing, so
   existing `libconfig.yaml` files produce byte-identical output; `generate definitions`
   writes the section into new stubs with `[commands, queries]`.
+- **[What DIZZY is (and why events)](docs/explanation/what-is-dizzy.md)** — an
+  on-ramp for readers who have not done event sourcing. Opens on the design
+  decision a `status` column makes for you, then names the seven element types as
+  parts of a system the reader has already seen. Includes the guestbook
+  feature-file by snippet so it cannot drift, and hands off to the tutorial.
+- `just churn [ref]` — how much of the current branch is new since the last tagged
+  release, for scoping review before a cut. Naive by design: every tracked line,
+  docs and tests and lockfiles included.
 
 ### Changed
 - Package version is now derived from git tags via `hatch-vcs` instead of being
@@ -111,5 +119,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `http_transport`, so a host mounts it in the framework it already runs.
 - Generated wirings no longer import their adapter class: a context receives an
   adapter *instance*, supplied by the host and looked up by name.
+
+### Fixed
+- `just install` installed a bare `.`, but `cli.py` imports `typer` at module scope
+  and typer moved behind the `gen` extra — the recipe put a `dizzy` on PATH that
+  died on `ModuleNotFoundError` before it could print `--help`. It now installs
+  `".[gen]"`, which is what `pyproject.toml` already claimed it did.
+- `examples/README.md` documented a three-stage sequence for an example whose
+  `kitchen.py` consumes generated wiring. Because `generate libraries` rewrites the
+  workspace manifest — dropping the `wiring` member and the `[tool.uv.sources]`
+  entry that stage 4 writes — following it produced a workspace that synced
+  successfully and installed nothing.
+- `docs/reference/SPECIFICATION.md` documented an `attributes:` sub-map on commands
+  and events, and a `models:` list on projections. `CommandDef` and `EventDef` carry
+  only `name` and `description` under `extra="forbid"`, and `ProjectionDef` takes a
+  singular optional `model`, so every example in those sections was a load error.
+- README claimed generated deployment and tests (no such generator exists), called
+  the repo a uv monorepo (it is one hatchling package), listed a `queriers:` section
+  absent from the schema, and pinned an install example to a tag that was never cut.
 
 [Unreleased]: https://github.com/PNNL/dizzy/compare/v0.1.1...HEAD
