@@ -10,6 +10,9 @@ gen-feat-pydantic:
 gen-libconfig-pydantic:
     uv run gen-pydantic dizzy/src/dizzy/def/libconfig.yaml > dizzy/src/dizzy/libconfig_schema.py
 
+gen-topology-pydantic:
+    uv run gen-pydantic dizzy/src/dizzy/def/topology.yaml > dizzy/src/dizzy/topology_schema.py
+
 test:
     uv run pytest
 
