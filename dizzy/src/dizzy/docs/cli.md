@@ -69,6 +69,31 @@ packages under `lib/python-uv/`: `gen_def` (Pydantic + SQLAlchemy models) and `g
 (typed Protocols, contexts, adapters). Each is an installable package. Requires `def/`
 stubs; run `definitions` first.
 
+Also emits **runtime-neutral JSON Schema** for the contract kinds selected by the
+`json_schema` section of `libconfig.yaml`:
+
+```yaml
+json_schema:
+  contracts: [commands, queries]   # any of: commands | events | queries | models
+  output_dir: gen_schema           # relative to <output_dir>; this is the default
+```
+
+One document per `def/` source, mirroring the `def/` layout — `gen_schema/
+commands.schema.json`, `gen_schema/queries/<name>.schema.json`, and so on. Every class
+in a source lands under `$defs`, so a single payload is validated with
+`{"$ref": "#/$defs/<ClassName>"}` against the emitted document (`CreateProject`,
+`GetProjectsOutput`, …).
+
+`gen_schema/` sits beside `def/` and `lib/` rather than inside `lib/python-uv/`: JSON
+Schema is consumed by every runtime and by things that are not a runtime at all — an
+HTTP edge, a docs site, a contract test — so filing it under one language tree would
+misplace it.
+
+Omitting the `json_schema` section emits nothing, which is what a `libconfig.yaml`
+written before the section existed does. Present-but-empty (`json_schema: {}`) opts in
+with the defaults above. `generate definitions` writes the section into new libconfig
+stubs; it never touches an existing one.
+
 ### dizzy generate libraries <feat_file> <output_dir>
 
 Read `libconfig.yaml` and package every element (procedure/policy/projection/query)

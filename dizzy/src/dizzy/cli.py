@@ -13,6 +13,7 @@ from dizzy.generators.commands import write_scaffold_commands
 from dizzy.generators.environment import write_scaffold_environment
 from dizzy.generators.events import write_scaffold_events
 from dizzy.generators.init_emitter import write_init_files
+from dizzy.generators.json_schema import write_json_schemas
 from dizzy.generators.lib_python_uv import (
     write_policy_python_uv,
     write_procedure_python_uv,
@@ -228,6 +229,19 @@ def gen(
 
     # Step 5 — write pyproject.toml for the gen_def / gen_int type packages
     write_type_packages(output_dir)
+
+    # Step 6 — runtime-neutral JSON Schema contracts, if libconfig asks for them.
+    # libconfig is optional here: `generate static` has never required it, and a
+    # config without a `json_schema` section emits nothing.
+    libconfig_path = output_dir / "libconfig.yaml"
+    config = load_libconfig(libconfig_path) if libconfig_path.exists() else None
+    try:
+        schemas = write_json_schemas(feat, output_dir, config)
+    except ValueError as err:
+        logger.error("%s", err)
+        raise typer.Exit(code=1) from err
+    if schemas:
+        logger.info("Generated %d JSON Schema contract(s).", len(schemas))
 
     logger.info("Generated lib/python-uv/gen_def and lib/python-uv/gen_int type packages.")
     logger.info(

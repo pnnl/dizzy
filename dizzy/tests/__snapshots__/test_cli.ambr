@@ -77,6 +77,81 @@
           attributes: {}
   
     ''',
+    'gen_schema/commands.schema.json': '''
+      {
+          "$defs": {
+              "IngestRecipeText": {
+                  "additionalProperties": false,
+                  "description": "Initiates ingestion of a recipe from a raw text source",
+                  "title": "IngestRecipeText",
+                  "type": "object"
+              }
+          },
+          "$id": "https://example.org/commands",
+          "$schema": "https://json-schema.org/draft/2019-09/schema",
+          "additionalProperties": true,
+          "metamodel_version": "1.11.0",
+          "title": "commands",
+          "type": "object",
+          "version": null
+      }
+      
+  
+    ''',
+    'gen_schema/queries/get_recipe.schema.json': '''
+      {
+          "$defs": {
+              "GetRecipeInput": {
+                  "additionalProperties": false,
+                  "description": "Input for get_recipe",
+                  "title": "GetRecipeInput",
+                  "type": "object"
+              },
+              "GetRecipeOutput": {
+                  "additionalProperties": false,
+                  "description": "Output for get_recipe",
+                  "title": "GetRecipeOutput",
+                  "type": "object"
+              }
+          },
+          "$id": "https://example.org/queries/get_recipe",
+          "$schema": "https://json-schema.org/draft/2019-09/schema",
+          "additionalProperties": true,
+          "metamodel_version": "1.11.0",
+          "title": "get_recipe",
+          "type": "object",
+          "version": null
+      }
+      
+  
+    ''',
+    'gen_schema/queries/get_recipe_text.schema.json': '''
+      {
+          "$defs": {
+              "GetRecipeTextInput": {
+                  "additionalProperties": false,
+                  "description": "Input for get_recipe_text",
+                  "title": "GetRecipeTextInput",
+                  "type": "object"
+              },
+              "GetRecipeTextOutput": {
+                  "additionalProperties": false,
+                  "description": "Output for get_recipe_text",
+                  "title": "GetRecipeTextOutput",
+                  "type": "object"
+              }
+          },
+          "$id": "https://example.org/queries/get_recipe_text",
+          "$schema": "https://json-schema.org/draft/2019-09/schema",
+          "additionalProperties": true,
+          "metamodel_version": "1.11.0",
+          "title": "get_recipe_text",
+          "type": "object",
+          "version": null
+      }
+      
+  
+    ''',
     'lib/python-uv/gen_def/gen_def/__init__.py': '',
     'lib/python-uv/gen_def/gen_def/pydantic/__init__.py': '',
     'lib/python-uv/gen_def/gen_def/pydantic/commands.py': '''
@@ -111,7 +186,7 @@
       )
       
       
-      metamodel_version = "None"
+      metamodel_version = "1.11.0"
       version = "None"
       
       
@@ -127,19 +202,7 @@
               strict = False,
           )
       
-          @model_serializer(mode='wrap', when_used='unless-none')
-          def treat_empty_lists_as_none(
-                  self, handler: SerializerFunctionWrapHandler,
-                  info: SerializationInfo) -> dict[str, Any]:
-              if info.exclude_none:
-                  _instance = self.model_copy()
-                  for field, field_info in type(_instance).model_fields.items():
-                      if getattr(_instance, field) == [] and not(
-                              field_info.is_required()):
-                          setattr(_instance, field, None)
-              else:
-                  _instance = self
-              return handler(_instance, info)
+      
       
       
       
@@ -216,7 +279,7 @@
       )
       
       
-      metamodel_version = "None"
+      metamodel_version = "1.11.0"
       version = "None"
       
       
@@ -232,19 +295,7 @@
               strict = False,
           )
       
-          @model_serializer(mode='wrap', when_used='unless-none')
-          def treat_empty_lists_as_none(
-                  self, handler: SerializerFunctionWrapHandler,
-                  info: SerializationInfo) -> dict[str, Any]:
-              if info.exclude_none:
-                  _instance = self.model_copy()
-                  for field, field_info in type(_instance).model_fields.items():
-                      if getattr(_instance, field) == [] and not(
-                              field_info.is_required()):
-                          setattr(_instance, field, None)
-              else:
-                  _instance = self
-              return handler(_instance, info)
+      
       
       
       
@@ -322,7 +373,7 @@
       )
       
       
-      metamodel_version = "None"
+      metamodel_version = "1.11.0"
       version = "None"
       
       
@@ -338,19 +389,7 @@
               strict = False,
           )
       
-          @model_serializer(mode='wrap', when_used='unless-none')
-          def treat_empty_lists_as_none(
-                  self, handler: SerializerFunctionWrapHandler,
-                  info: SerializationInfo) -> dict[str, Any]:
-              if info.exclude_none:
-                  _instance = self.model_copy()
-                  for field, field_info in type(_instance).model_fields.items():
-                      if getattr(_instance, field) == [] and not(
-                              field_info.is_required()):
-                          setattr(_instance, field, None)
-              else:
-                  _instance = self
-              return handler(_instance, info)
+      
       
       
       
@@ -419,7 +458,7 @@
       )
       
       
-      metamodel_version = "None"
+      metamodel_version = "1.11.0"
       version = "None"
       
       
@@ -435,19 +474,7 @@
               strict = False,
           )
       
-          @model_serializer(mode='wrap', when_used='unless-none')
-          def treat_empty_lists_as_none(
-                  self, handler: SerializerFunctionWrapHandler,
-                  info: SerializationInfo) -> dict[str, Any]:
-              if info.exclude_none:
-                  _instance = self.model_copy()
-                  for field, field_info in type(_instance).model_fields.items():
-                      if getattr(_instance, field) == [] and not(
-                              field_info.is_required()):
-                          setattr(_instance, field, None)
-              else:
-                  _instance = self
-              return handler(_instance, info)
+      
       
       
       
@@ -535,7 +562,7 @@
       )
       
       
-      metamodel_version = "None"
+      metamodel_version = "1.11.0"
       version = "None"
       
       
@@ -551,19 +578,7 @@
               strict = False,
           )
       
-          @model_serializer(mode='wrap', when_used='unless-none')
-          def treat_empty_lists_as_none(
-                  self, handler: SerializerFunctionWrapHandler,
-                  info: SerializationInfo) -> dict[str, Any]:
-              if info.exclude_none:
-                  _instance = self.model_copy()
-                  for field, field_info in type(_instance).model_fields.items():
-                      if getattr(_instance, field) == [] and not(
-                              field_info.is_required()):
-                          setattr(_instance, field, None)
-              else:
-                  _instance = self
-              return handler(_instance, info)
+      
       
       
       
@@ -880,6 +895,12 @@
       projections:
         recipe_library:
           runtimes: [python-uv]
+      
+      # Runtime-neutral JSON Schema contracts, emitted by `dizzy generate static`
+      # into <output_dir>/gen_schema/. Contract kinds: commands | events | queries |
+      # models. Delete the section to stop emitting them.
+      json_schema:
+        contracts: [commands, queries]
   
     ''',
   })

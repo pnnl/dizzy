@@ -36,7 +36,10 @@ dependencies = [
 [project.optional-dependencies]
 # Authoring: the `dizzy` CLI and every generator.
 gen = [
-    "linkml>=1.9.5",
+    # Floor is 1.11.1, not a nicety: 1.9.5 mapped `range: decimal` to
+    # Column(Integer()) in gen-sqla — silent data loss on every monetary or
+    # measured field. 1.11.x emits Column(Numeric()).
+    "linkml>=1.11.1",
     "openai>=2.42.0",
     "python-dotenv>=1.0.0",
     "typer>=0.20.0",

@@ -28,10 +28,17 @@ def _normalize_section(raw: dict, section: str) -> None:
 
 
 def _normalize(raw: dict) -> dict:
-    """Convert the user-facing YAML dict-key format into the list format expected by Pydantic."""
+    """Convert the user-facing YAML dict-key format into the list format expected by Pydantic.
+
+    Absent element sections are materialised as empty lists so callers never have to
+    distinguish "omitted" from "empty" — LinkML's pydantic generator stopped defaulting
+    optional multivalued slots to ``[]`` in 1.11, and this keeps the loader's contract
+    independent of that.
+    """
     result = dict(raw)
     for section in _SECTIONS:
         _normalize_section(result, section)
+        result.setdefault(section, [])
     return result
 
 

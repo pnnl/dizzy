@@ -40,6 +40,29 @@ classes:
         range: ElementBinding
         multivalued: true
         inlined: true
+      json_schema:
+        description: >-
+          Runtime-neutral JSON Schema emission. Omit the section entirely to emit
+          nothing — that is the backwards-compatible default for libconfig.yaml
+          files written before this section existed.
+        range: JsonSchemaConfig
+        inlined: true
+
+  JsonSchemaConfig:
+    description: >-
+      Controls the JSON Schema contracts emitted by `dizzy generate static`.
+    attributes:
+      contracts:
+        description: >-
+          Which contract kinds get a JSON Schema. Defaults to [commands, queries]
+          when the json_schema section is present but the key is omitted.
+        range: ContractKind
+        multivalued: true
+      output_dir:
+        description: >-
+          Directory for the emitted schemas, relative to the generate output
+          directory. Defaults to `gen_schema`.
+        range: string
 
   ElementBinding:
     description: >-
@@ -64,3 +87,15 @@ enums:
         description: Rust with Cargo.toml
       typescript-npm:
         description: TypeScript with package.json and tsconfig.json
+
+  ContractKind:
+    description: Contract families that can be emitted as JSON Schema
+    permissible_values:
+      commands:
+        description: def/commands.yaml — the write intentions
+      events:
+        description: def/events.yaml — the recorded facts
+      queries:
+        description: def/queries/*.yaml — the read surface (input + output shapes)
+      models:
+        description: def/models/*.yaml — the projected read models
