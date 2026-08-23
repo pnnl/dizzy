@@ -195,8 +195,8 @@ class ConsumerGroup(ConfiguredBaseModel):
     description: Optional[str] = Field(default=None, description="""Why this group exists, in deployment terms.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Topology', 'ConsumerGroup']} })
     include: Optional[list[Selector]] = Field(default=None, description="""Which elements this group claims. Selectors are additive, and two groups whose selectors match the same element is a generation error — placement must be decided here, not by declaration order. To avoid enumerating the tail, mark one group `catch_all` instead.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup']} })
     catch_all: Optional[bool] = Field(default=None, description="""This group claims every element no other group claimed. Exactly one group in a topology may set it, and that group's `include` selectors (if any) are additive with what it sweeps up. Without this, adding an element to the feature-file would silently leave it unplaced — or force every topology to be edited in lockstep with the design.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup']} })
-    workers: Optional[int] = Field(default=None, description="""How many processes serve this group. A scaling decision, safe to change without re-reasoning about correctness. Defaults to 1.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
-    max_in_flight: Optional[int] = Field(default=None, description="""Upper bound on units of work a single worker holds at once — the backpressure knob for fan-out workloads, where one command can produce thousands of downstream commands. Unset means unbounded.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
+    workers: Optional[int] = Field(default=None, description="""How many processes serve this group. A scaling decision, safe to change without re-reasoning about correctness. Defaults to 1.""", ge=1, json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
+    max_in_flight: Optional[int] = Field(default=None, description="""Upper bound on units of work a single worker holds at once — the backpressure knob for fan-out workloads, where one command can produce thousands of downstream commands. Unset means unbounded.""", ge=1, json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
     retry: Optional[RetryPolicy] = Field(default=None, description="""What happens when an element raises.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
     transport: Optional[Transport] = Field(default=None, description="""Overrides the topology-level transport for this group alone.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Topology', 'ConsumerGroup']} })
 
@@ -218,9 +218,9 @@ class RetryPolicy(ConfiguredBaseModel):
     """
     linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://example.org/dizzy/topology'})
 
-    max_attempts: Optional[int] = Field(default=None, description="""Attempts before the unit is treated as failed. Defaults to 1.""", json_schema_extra = { "linkml_meta": {'domain_of': ['RetryPolicy']} })
+    max_attempts: Optional[int] = Field(default=None, description="""Attempts before the unit is treated as failed. Defaults to 1.""", ge=1, json_schema_extra = { "linkml_meta": {'domain_of': ['RetryPolicy']} })
     backoff: Optional[BackoffKind] = Field(default=None, description="""How the delay grows between attempts. Defaults to `none`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['RetryPolicy']} })
-    initial_delay_ms: Optional[int] = Field(default=None, description="""Delay before the second attempt. Ignored when backoff is `none`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['RetryPolicy']} })
+    initial_delay_ms: Optional[int] = Field(default=None, description="""Delay before the second attempt. Ignored when backoff is `none`.""", ge=0, json_schema_extra = { "linkml_meta": {'domain_of': ['RetryPolicy']} })
     dead_letter: Optional[bool] = Field(default=None, description="""Whether a permanently failed unit is recorded for operator attention. Fan-out workloads need this: one bad artifact in a thousand must be findable without reading a log file.""", json_schema_extra = { "linkml_meta": {'domain_of': ['RetryPolicy']} })
 
 
@@ -250,8 +250,8 @@ class GroupDefaults(ConfiguredBaseModel):
     """
     linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://example.org/dizzy/topology'})
 
-    workers: Optional[int] = Field(default=None, description="""Default worker count for a group that does not state one.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
-    max_in_flight: Optional[int] = Field(default=None, description="""Default in-flight bound for a group that does not state one.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
+    workers: Optional[int] = Field(default=None, description="""Default worker count for a group that does not state one.""", ge=1, json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
+    max_in_flight: Optional[int] = Field(default=None, description="""Default in-flight bound for a group that does not state one.""", ge=1, json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
     retry: Optional[RetryPolicy] = Field(default=None, description="""Default retry policy for a group that does not state one.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ConsumerGroup', 'GroupDefaults']} })
 
 

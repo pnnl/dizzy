@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+import yaml
+from pydantic import ValidationError
 
 from dizzy.config import CONFIG_TEMPLATE, load_config
 from dizzy.feat_loader import load_feat, validate_feat
@@ -64,6 +66,7 @@ from dizzy.libconfig_loader import load_libconfig, validate_libconfig
 from dizzy.logger import logger, setup_logging
 from dizzy.simulate.session import Session
 from dizzy.simulate.sim_executors import SimPolicyExecutor, SimProcedureExecutor
+from dizzy.topology_loader import load_topology, validate_topology
 
 app = typer.Typer()
 
@@ -405,6 +408,30 @@ def wiring(
         for err in config_errors:
             logger.error("%s", err)
         raise typer.Exit(code=1)
+
+    topology_path = output_dir / "topology.yaml"
+    if topology_path.exists():
+        try:
+            topology = load_topology(topology_path)
+        except (yaml.YAMLError, ValidationError) as exc:
+            # topology.yaml is hand-authored, so a typo'd key is the expected failure —
+            # it gets the same log-then-exit shape as every other error here, never a
+            # traceback.
+            logger.error("topology.yaml is not valid: %s", exc)
+            raise typer.Exit(code=1) from exc
+        topology_errors = validate_topology(topology, feat)
+        for err in topology_errors:
+            logger.error("%s", err)
+        if topology_errors:
+            raise typer.Exit(code=1)
+        # Say so: without a positive signal, "my topology is enforced" and "my topology
+        # is ignored because I misspelled the filename" look identical.
+        logger.info("Validated topology.yaml — %d consumer groups", len(topology.groups or []))
+    elif (output_dir / "topology.yml").exists():
+        logger.warning(
+            "Found topology.yml, but the topology is read from topology.yaml — "
+            "no placement was validated."
+        )
 
     # The wiring imports every element package, so it can only be generated for a
     # runtime that has them. Today that is python-uv; rust/ts stop at types + stubs.

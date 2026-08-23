@@ -1,0 +1,385 @@
+"""Topology loader — YAML ingestion, Pydantic validation, and cross-reference checks."""
+
+from fnmatch import fnmatchcase
+from pathlib import Path
+
+import yaml
+
+from dizzy.feat_schema import FeatureDefinition
+from dizzy.logger import logger
+from dizzy.topology_schema import ConsumerGroup, GroupDefaults, Selector, Topology
+
+# The kinds a topology places, in declaration order. Queries are absent by construction:
+# their placement is a question about the read substrate, not about the log (rule 4).
+# Keyed by the plural string, not by ElementKind: the generated models set
+# `use_enum_values = True`, so `selector.kind` is "projections", never the enum member.
+_SINGULAR = {"procedures": "procedure", "policies": "policy", "projections": "projection"}
+
+_GLOB_CHARS = "*?["
+
+
+def _and_list(items: list[str]) -> str:
+    """Join already-rendered *items* as ``a``, ``a and b``, ``a, b and c``."""
+    if len(items) <= 1:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _summarise(elements: list[tuple[str, str]], limit: int = 3) -> str:
+    """Render up to *limit* elements as labels, counting the rest — a glob may match many."""
+    shown = _and_list([_label(k, n) for k, n in elements[:limit]])
+    remainder = len(elements) - limit
+    return shown if remainder <= 0 else f"{shown} and {remainder} more"
+
+
+def _label(kind: str, name: str) -> str:
+    """Render an element as ``projection 'record_artifact'`` — every message's anchor."""
+    return f"{kind} '{name}'"
+
+
+def _universe(feat: FeatureDefinition) -> list[tuple[str, str]]:
+    """Every placeable element as ``(kind, name)``, in kind then feat declaration order.
+
+    An element is the pair, never the bare name: nothing in the feature-file enforces
+    cross-kind name uniqueness, so a procedure and a projection may both be `ingest`.
+    """
+    sections = {
+        "procedures": feat.procedures or [],
+        "policies": feat.policies or [],
+        "projections": feat.projections or [],
+    }
+    return [(singular, e.name) for plural, singular in _SINGULAR.items() for e in sections[plural]]
+
+
+def _models(feat: FeatureDefinition) -> dict[tuple[str, str], str | None]:
+    """Map each element to the model it folds, or ``None`` for non-projections."""
+    folds: dict[tuple[str, str], str | None] = dict.fromkeys(_universe(feat))
+    for projection in feat.projections or []:
+        folds[("projection", projection.name)] = projection.model
+    return folds
+
+
+def _matches(selector: Selector, kind: str, name: str, model: str | None) -> bool:
+    """Whether *selector* claims the element ``(kind, name)`` folding *model*.
+
+    The fields a selector states are ANDed; a field it omits constrains nothing. An
+    element that lacks the field a selector states is a non-match, never a don't-care.
+    """
+    if selector.kind is not None and _SINGULAR[selector.kind] != kind:
+        return False
+    if selector.model is not None and (kind != "projection" or model != selector.model):
+        return False
+    # fnmatchcase, never fnmatch: the latter runs os.path.normcase, so the same topology
+    # would validate differently on a case-insensitive filesystem.
+    if selector.names and not any(fnmatchcase(name, p) for p in selector.names):
+        return False
+    return True
+
+
+def _inherited(group_value: int | None, default_value: int | None, field: str) -> tuple[int, str]:
+    """Resolve one knob to ``(value, source)``, source naming where the value came from.
+
+    The source is interpolated into the ordering errors so a topology-level default does
+    not produce an unattributable message quoting a number the author never wrote there.
+    """
+    if group_value is not None:
+        return group_value, field
+    if default_value is not None:
+        return default_value, f"defaults.{field}"
+    return 1, field
+
+
+def _effective_concurrency(group: ConsumerGroup, defaults: GroupDefaults | None) -> tuple[int, str]:
+    """How many units of work a group may have in flight at once, and which field said so.
+
+    Both knobs break log order the same way: N workers fold N events concurrently, and so
+    does one worker holding N units in flight. The ordering gate therefore reads whichever
+    is larger — a group is serial only when both are 1 — and reports the field the author
+    wrote, so the message names something they can edit.
+    """
+    workers = _inherited(group.workers, defaults.workers if defaults else None, "workers")
+    in_flight = _inherited(
+        group.max_in_flight, defaults.max_in_flight if defaults else None, "max_in_flight"
+    )
+    return max(workers, in_flight, key=lambda pair: pair[0])
+
+
+def _resolve(topology: Topology, feat: FeatureDefinition) -> dict[tuple[str, str], list[str]]:
+    """Map every placeable element to the consumer groups that claim it.
+
+    Explicit ``include`` selectors are applied first, then a single ``catch_all``
+    group takes every element still unclaimed. An unclaimed element maps to an
+    empty list; a doubly claimed one maps to two group names in declaration order.
+    """
+    groups = topology.groups or []
+    universe = _universe(feat)
+    element_models = _models(feat)
+    claims: dict[tuple[str, str], list[str]] = {e: [] for e in universe}
+
+    for group in groups:
+        for kind, name in universe:
+            selectors = group.include or []
+            if any(_matches(s, kind, name, element_models[(kind, name)]) for s in selectors):
+                claims[(kind, name)].append(group.name)
+
+    # The sweep is defined by subtraction, so it runs strictly after every explicit
+    # selector in every group. With two sweepers the subtraction is undefined — T6 has
+    # already fired, and sweeping arbitrarily would manufacture double-claims on top.
+    sweepers = [g for g in groups if g.catch_all]
+    if len(sweepers) == 1:
+        for claimants in claims.values():
+            if not claimants:
+                claimants.append(sweepers[0].name)
+
+    return claims
+
+
+def load_topology(path: str | Path) -> Topology:
+    """Load a ``topology.yaml`` file, validate it, and return a Topology."""
+    raw = yaml.safe_load(Path(path).read_text())
+    logger.debug("loaded topology", extra={"path": str(path)})
+    if raw is None:
+        raw = {}
+    normalised = dict(raw)
+    # LinkML 1.11 stopped defaulting optional multivalued slots, and callers must never
+    # distinguish "omitted" from "empty".
+    normalised.setdefault("groups", [])
+    return Topology.model_validate(normalised)
+
+
+def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
+    """Validate a topology's element placement against the feature-file.
+
+    Returns a list of error strings; empty list means the topology is valid. Checks run
+    in three phases — structure, then references, then placement — and each returns
+    early on failure: an incoherent topology makes reference checks meaningless, and a
+    selector naming something the feat does not declare makes every placement
+    conclusion noise about elements the author never meant to leave unplaced.
+    """
+    errors: list[str] = []
+    groups = topology.groups or []
+
+    # ---- Phase A: structure, the topology alone ----------------------------------
+    if not groups:
+        errors.append(
+            "topology declares no consumer groups — every element would be unclaimed (rule 5)"
+        )
+        logger.debug("validated topology", extra={"errors": len(errors)})
+        return errors
+
+    seen: set[str] = set()
+    for group in groups:
+        if group.name in seen:
+            errors.append(
+                f"topology group '{group.name}' is declared more than once "
+                "— group names must be unique"
+            )
+        seen.add(group.name)
+        if not (group.include or []) and not group.catch_all:
+            errors.append(
+                f"topology group '{group.name}': no 'include' selectors and 'catch_all' "
+                "is not set — the group claims nothing"
+            )
+        for i, selector in enumerate(group.include or [], start=1):
+            if selector.kind is None and not selector.names and selector.model is None:
+                errors.append(
+                    f"topology group '{group.name}': selector #{i} states none of 'kind', "
+                    "'names' or 'model' — set 'catch_all: true' if the group should claim "
+                    "the remainder"
+                )
+    sweepers = [g.name for g in groups if g.catch_all]
+    if len(sweepers) > 1:
+        rendered = _and_list([f"'{n}'" for n in sweepers])
+        errors.append(
+            f"topology groups {rendered} all set 'catch_all' — at most one group may (rule 5)"
+        )
+
+    if errors:
+        logger.debug("validated topology", extra={"errors": len(errors)})
+        return errors
+
+    # ---- Phase B: references, and rule 4 -----------------------------------------
+    universe = _universe(feat)
+    element_models = _models(feat)
+    model_names = {m.name for m in feat.models or []}
+    folded = {p.model for p in feat.projections or [] if p.model}
+    query_names = [q.name for q in feat.queries or []]
+    kinds_of: dict[str, list[str]] = {}
+    for kind, name in universe:
+        kinds_of.setdefault(name, []).append(kind)
+
+    for group in groups:
+        for i, selector in enumerate(group.include or [], start=1):
+            reported = False
+            dead_globs: list[str] = []
+
+            if selector.model is not None:
+                if selector.kind is not None and selector.kind != "projections":
+                    errors.append(
+                        f"topology group '{group.name}': selector #{i} states model "
+                        f"'{selector.model}' with kind '{selector.kind}' — only projections "
+                        "fold a model, so the selector matches nothing"
+                    )
+                    reported = True
+                elif selector.model not in model_names:
+                    errors.append(
+                        f"topology group '{group.name}': selector #{i} names model "
+                        f"'{selector.model}' not declared in models"
+                    )
+                    reported = True
+                elif selector.model not in folded:
+                    errors.append(
+                        f"topology group '{group.name}': selector #{i} names model "
+                        f"'{selector.model}', which no projection folds — the selector "
+                        "matches nothing"
+                    )
+                    reported = True
+
+            # dict.fromkeys, not a set: a pattern written twice is one mistake with one
+            # fix, and the order patterns were authored in is the order to report them in.
+            for pattern in dict.fromkeys(selector.names or []):
+                is_glob = any(c in pattern for c in _GLOB_CHARS)
+                any_kind = [e for e in universe if fnmatchcase(e[1], pattern)]
+
+                if selector.kind is None and selector.model is None:
+                    # The only reachable shape of rule 4: a selector stating a kind or a
+                    # model provably cannot claim a query, so flagging it would be false.
+                    # An exact name that also names a placeable element is not a query
+                    # reference — nothing enforces cross-kind name uniqueness, and the
+                    # selector unambiguously claims the element — but a glob sweeping a
+                    # query name is reported even when it also matches elements, because
+                    # the pattern reads as though it covers the query too.
+                    hits = [q for q in query_names if fnmatchcase(q, pattern)]
+                    if hits and (is_glob or not any_kind):
+                        for query in hits:
+                            errors.append(
+                                f"topology group '{group.name}': selector #{i} matches query "
+                                f"'{query}' — queries are never claimed by a consumer group "
+                                "(rule 4)"
+                            )
+                        reported = True
+                        # "not a declared element" would be actively wrong about a name
+                        # the feat declares as a query.
+                        continue
+
+                if not any_kind:
+                    if not is_glob:
+                        errors.append(
+                            f"topology group '{group.name}': selector #{i} names '{pattern}' "
+                            "not declared in procedures, policies or projections"
+                        )
+                        reported = True
+                    else:
+                        # A glob matching nothing today is not an error on its own:
+                        # matching by property is what lets a topology survive the
+                        # feature-file gaining an element next week. It is only worth
+                        # saying when the whole selector turned out to claim nothing,
+                        # so the message below can name the pattern that went dead.
+                        dead_globs.append(pattern)
+                elif selector.kind is not None and not any(
+                    e[0] == _SINGULAR[selector.kind] for e in any_kind
+                ):
+                    # Reported for a glob too: a sibling pattern that does match would
+                    # otherwise swallow this one, and the elements the author meant to
+                    # place would drift into the catch_all group with nothing said.
+                    if is_glob:
+                        errors.append(
+                            f"topology group '{group.name}': selector #{i} pattern '{pattern}' "
+                            f"with kind '{selector.kind}' matches no "
+                            f"{_SINGULAR[selector.kind]} — it matches only "
+                            f"{_summarise(any_kind)}, so the pattern claims nothing"
+                        )
+                    else:
+                        declared = _and_list([f"a {k}" for k in kinds_of[pattern]])
+                        errors.append(
+                            f"topology group '{group.name}': selector #{i} names '{pattern}' "
+                            f"with kind '{selector.kind}', but '{pattern}' is declared as "
+                            f"{declared}"
+                        )
+                    reported = True
+
+            if not reported and not [
+                e for e in universe if _matches(selector, e[0], e[1], element_models[e])
+            ]:
+                rendered = _and_list([f"'{p}'" for p in dead_globs])
+                detail = ""
+                if len(dead_globs) == 1:
+                    detail = f"; pattern {rendered} matches nothing"
+                elif dead_globs:
+                    detail = f"; patterns {rendered} match nothing"
+                errors.append(
+                    f"topology group '{group.name}': selector #{i} claims nothing "
+                    f"— no element satisfies all of the fields it states{detail}"
+                )
+
+    if errors:
+        logger.debug("validated topology", extra={"errors": len(errors)})
+        return errors
+
+    # ---- Phase C: placement -------------------------------------------------------
+    claims = _resolve(topology, feat)
+    # Sole membership: a doubly claimed element belongs to nobody, so it cannot cascade a
+    # rule-1 or workers error on top of the one message that names its real problem.
+    members = {g.name: [e for e in universe if claims[e] == [g.name]] for g in groups}
+
+    for kind, name in universe:
+        claimants = claims[(kind, name)]
+        if len(claimants) >= 2:
+            rendered = _and_list([f"'{c}'" for c in claimants])
+            errors.append(
+                f"{_label(kind, name)} is claimed by topology groups {rendered} — every "
+                "element must be claimed by exactly one group (rule 5)"
+            )
+        elif not claimants:
+            errors.append(
+                f"{_label(kind, name)} is claimed by no topology group, and no group sets "
+                "'catch_all' (rule 5)"
+            )
+
+    for model in feat.models or []:
+        cohort = [
+            p
+            for p in feat.projections or []
+            if p.model == model.name and len(claims[("projection", p.name)]) == 1
+        ]
+        if len({claims[("projection", p.name)][0] for p in cohort}) > 1:
+            placements = _and_list(
+                [f"'{p.name}' (group '{claims[('projection', p.name)][0]}')" for p in cohort]
+            )
+            errors.append(
+                f"model '{model.name}': projections {placements} fold one model in different "
+                "consumer groups — one model's projections must share a group (rule 1)"
+            )
+
+    # Rule 2: policies may be partitioned freely — they observe an event and dispatch a
+    # command, so out-of-order observation is harmless. A policies-only group is the only
+    # membership that can honestly carry workers > 1 today; deliberately unchecked.
+    serial = "workers: 1 and max_in_flight: 1"
+    for group in groups:
+        count, source = _effective_concurrency(group, topology.defaults)
+        if count <= 1:
+            continue
+        mine = members[group.name]
+        projection = next((e for e in mine if e[0] == "projection"), None)
+        procedure = next((e for e in mine if e[0] == "procedure"), None)
+        if projection is not None:
+            errors.append(
+                f"topology group '{group.name}': {source} is {count}, but the group claims "
+                f"projection '{projection[1]}' — a fold is only correct in log order, so a "
+                f"group containing a projection must run serially ({serial})"
+            )
+        elif procedure is not None:
+            errors.append(
+                f"topology group '{group.name}': {source} is {count}, but the group claims "
+                f"procedure '{procedure[1]}' — the feature-file declares no aggregate key, "
+                "so a procedure group cannot be proven partitionable and must run serially "
+                f"({serial})"
+            )
+        elif not mine:
+            errors.append(
+                f"topology group '{group.name}': {source} is {count}, but the group claims no "
+                f"element — only a policies-only group may exceed {serial}"
+            )
+
+    logger.debug("validated topology", extra={"errors": len(errors)})
+    return errors

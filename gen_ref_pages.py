@@ -14,7 +14,7 @@ SRC = Path("dizzy/src")
 PKG = SRC / "dizzy"
 
 # Generated/auto-built modules — not hand-authored source, so skip them.
-SKIP = {"_version", "feat_schema", "libconfig_schema"}
+SKIP = {"_version", "feat_schema", "libconfig_schema", "topology_schema"}
 
 nav = mkdocs_gen_files.Nav()
 

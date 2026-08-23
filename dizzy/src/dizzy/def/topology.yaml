@@ -103,12 +103,14 @@ classes:
           How many processes serve this group. A scaling decision, safe to change
           without re-reasoning about correctness. Defaults to 1.
         range: integer
+        minimum_value: 1
       max_in_flight:
         description: >-
           Upper bound on units of work a single worker holds at once — the
           backpressure knob for fan-out workloads, where one command can produce
           thousands of downstream commands. Unset means unbounded.
         range: integer
+        minimum_value: 1
       retry:
         description: What happens when an element raises.
         range: RetryPolicy
@@ -151,12 +153,14 @@ classes:
       max_attempts:
         description: Attempts before the unit is treated as failed. Defaults to 1.
         range: integer
+        minimum_value: 1
       backoff:
         description: How the delay grows between attempts. Defaults to `none`.
         range: BackoffKind
       initial_delay_ms:
         description: Delay before the second attempt. Ignored when backoff is `none`.
         range: integer
+        minimum_value: 0
       dead_letter:
         description: >-
           Whether a permanently failed unit is recorded for operator attention.
@@ -195,9 +199,11 @@ classes:
       workers:
         description: Default worker count for a group that does not state one.
         range: integer
+        minimum_value: 1
       max_in_flight:
         description: Default in-flight bound for a group that does not state one.
         range: integer
+        minimum_value: 1
       retry:
         description: Default retry policy for a group that does not state one.
         range: RetryPolicy

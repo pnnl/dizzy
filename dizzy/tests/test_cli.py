@@ -1,6 +1,7 @@
 """End-to-end def + gen + lib integration tests."""
 
 import logging
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -293,6 +294,124 @@ def test_wiring_stage_emits_a_workspace_package(tmp_path: Path) -> None:
     assert (base / "wiring" / "src" / "recipe.feat.yaml").exists()
     workspace = (base / "pyproject.toml").read_text()
     assert '"wiring",' in workspace
+
+
+def test_wiring_error_when_topology_invalid(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An invalid topology fails before any wiring is written."""
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+
+    # Two groups claim recipe_library — placement must be decided in the file, not by
+    # declaration order.
+    (tmp_path / "topology.yaml").write_text(
+        textwrap.dedent(
+            """
+            groups:
+              - name: folds
+                include:
+                  - model: recipes
+              - name: hot
+                include:
+                  - names: [recipe_library]
+              - name: rest
+                catch_all: true
+            """
+        )
+    )
+
+    with caplog.at_level(logging.ERROR, logger="dizzy"):
+        with pytest.raises(ClickExit) as exc_info:
+            wiring(
+                feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+                output_dir=tmp_path,
+                dizzy_source=None,
+            )
+    assert exc_info.value.exit_code == 1
+    assert "recipe_library" in caplog.text
+    assert (tmp_path / "lib" / "python-uv" / "wiring").exists() is False
+
+
+def test_wiring_succeeds_with_valid_topology(tmp_path: Path) -> None:
+    """A topology the feat satisfies is read, validated, and generation proceeds."""
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+
+    (tmp_path / "topology.yaml").write_text(
+        textwrap.dedent(
+            """
+            groups:
+              - name: folds
+                include:
+                  - model: recipes
+              - name: reactions
+                include:
+                  - kind: policies
+              - name: rest
+                catch_all: true
+            """
+        )
+    )
+
+    wiring(
+        feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+        output_dir=tmp_path,
+        dizzy_source=None,
+    )
+
+    assert (tmp_path / "lib" / "python-uv" / "wiring" / "src" / "wiring.py").exists()
+
+
+def test_wiring_error_when_topology_is_malformed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A typo'd key is logged and exits 1 — never a traceback out of pydantic."""
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "topology.yaml").write_text("groups:\n  - name: all\n    catchall: true\n")
+
+    with caplog.at_level(logging.ERROR, logger="dizzy"):
+        with pytest.raises(ClickExit) as exc_info:
+            wiring(
+                feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+                output_dir=tmp_path,
+                dizzy_source=None,
+            )
+    assert exc_info.value.exit_code == 1
+    assert "topology.yaml is not valid" in caplog.text
+    assert "catchall" in caplog.text
+
+
+def test_wiring_succeeds_without_topology_file(tmp_path: Path) -> None:
+    """topology.yaml is optional — its absence is the default single-group topology."""
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    (tmp_path / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    assert not (tmp_path / "topology.yaml").exists()
+
+    wiring(
+        feat_file=FIXTURES_DIR / "recipe.feat.yaml",
+        output_dir=tmp_path,
+        dizzy_source=None,
+    )
+
+    assert (tmp_path / "lib" / "python-uv" / "wiring" / "src" / "wiring.py").exists()
 
 
 def test_the_generated_workspace_names_where_dizzy_comes_from(tmp_path: Path) -> None:

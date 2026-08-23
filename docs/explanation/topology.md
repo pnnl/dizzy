@@ -67,6 +67,16 @@ groups:
     catch_all: true
 ```
 
+Both examples scale a group of procedures, and `dizzy generate wiring` refuses that
+today. With no aggregate key in the feature-file, a procedure group cannot be *proven*
+partitionable, so the validator permits concurrency only for a group whose whole
+membership is policies — projections never, because a fold is only correct in log order.
+Concurrency means both knobs: one worker holding 64 units in flight folds 64 events at
+once exactly as 64 workers do, so the gate reads `max(workers, max_in_flight)` and names
+whichever field the author wrote. The numbers above are what these topologies want to be
+once rule 3 is expressible; until then those two groups must read `workers: 1` and
+`max_in_flight: 1`.
+
 Two schema decisions came directly out of writing those:
 
 **Selectors, not enumeration.** 124 elements must not mean 124 lines. Selectors

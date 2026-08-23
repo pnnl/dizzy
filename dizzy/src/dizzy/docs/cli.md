@@ -152,7 +152,20 @@ comes from: the canonical repository by default, or `--dizzy-source <path|git-ur
 override (a checkout path is the usual choice when the generated lib lives inside the
 repository that generated it).
 
-**Wiring is a pure function of the feature-file, which is why it is generated.** The feat
+The stage also reads an optional `topology.yaml` sitting beside `libconfig.yaml` in
+`<output_dir>`: the deployment topology, which says WHERE the elements run — which of
+them share a cursor over the event log (a *consumer group*), how many workers serve each,
+what carries the wake-up. Absent, the default topology applies: one group holding every
+element, in-process transport, behaviourally identical to a build with no topology at
+all. Present, it is validated against the feature-file before anything is written, and
+generation fails naming the element and the rule it broke — one model's projections split
+across groups, an element claimed twice or not at all, a selector naming something the
+feat does not declare, a group that cannot be proven safe to run concurrently. The file
+is read only under that exact name; a topology accepted is logged, so a misspelled
+filename is visible rather than a silently unenforced placement.
+
+**Wiring is a pure function of the feature-file and the topology, which is why it is
+generated.** The feat
 already declares, per element, exactly the argument list of its generated context: a
 procedure's `command:` gives the command it registers under, its `emits:` the emitter
 bindings, its `queries:` the query bindings, its `environment:` and `telemetry:` the

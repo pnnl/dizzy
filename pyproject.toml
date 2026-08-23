@@ -115,6 +115,7 @@ extend-exclude = [
     "dizzy/src/dizzy/_version.py",
     "dizzy/src/dizzy/feat_schema.py",
     "dizzy/src/dizzy/libconfig_schema.py",
+    "dizzy/src/dizzy/topology_schema.py",
 ]
 
 [tool.ruff.lint]
