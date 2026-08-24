@@ -351,34 +351,41 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 "consumer groups — one model's projections must share a group (rule 1)"
             )
 
-    # Rule 2: policies may be partitioned freely — they observe an event and dispatch a
-    # command, so out-of-order observation is harmless. A policies-only group is the only
-    # membership that can honestly carry workers > 1 today; deliberately unchecked.
+    # Rules 2 and 3. Policies partition freely — they observe an event and dispatch a
+    # command, so out-of-order observation is harmless. Procedures partition when they
+    # read nothing: a procedure declaring no queries computes its events from the command
+    # alone, so no concurrent decision can reach it. A procedure that DOES query is a
+    # read-modify-write over a model another procedure may be changing underneath it, and
+    # the feature-file declares no aggregate key to serialise it by — so that one, and
+    # only that one, is what forces a group serial.
     serial = "workers: 1 and max_in_flight: 1"
+    reads = {p.name: list(p.queries or []) for p in feat.procedures or []}
     for group in groups:
         count, source = _effective_concurrency(group, topology.defaults)
         if count <= 1:
             continue
         mine = members[group.name]
         projection = next((e for e in mine if e[0] == "projection"), None)
-        procedure = next((e for e in mine if e[0] == "procedure"), None)
+        reader = next((e for e in mine if e[0] == "procedure" and reads[e[1]]), None)
         if projection is not None:
             errors.append(
                 f"topology group '{group.name}': {source} is {count}, but the group claims "
                 f"projection '{projection[1]}' — a fold is only correct in log order, so a "
                 f"group containing a projection must run serially ({serial})"
             )
-        elif procedure is not None:
+        elif reader is not None:
+            queried = _and_list([f"'{q}'" for q in reads[reader[1]]])
             errors.append(
                 f"topology group '{group.name}': {source} is {count}, but the group claims "
-                f"procedure '{procedure[1]}' — the feature-file declares no aggregate key, "
-                "so a procedure group cannot be proven partitionable and must run serially "
+                f"procedure '{reader[1]}', which queries {queried} — it decides on a model a "
+                "concurrent procedure may be changing underneath it, and the feature-file "
+                "declares no aggregate key to serialise it by, so it must run serially "
                 f"({serial})"
             )
         elif not mine:
             errors.append(
                 f"topology group '{group.name}': {source} is {count}, but the group claims no "
-                f"element — only a policies-only group may exceed {serial}"
+                "element — there is nothing here to scale"
             )
 
     logger.debug("validated topology", extra={"errors": len(errors)})

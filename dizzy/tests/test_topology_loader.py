@@ -147,6 +147,15 @@ def _one_procedure_feat() -> FeatureDefinition:
     return _feat(procedures=[{"name": "ingest_recipe", "command": "ingest"}])
 
 
+def _reading_procedure_feat() -> FeatureDefinition:
+    """One procedure that queries a model — the read-modify-write rule 3 exists for."""
+    return _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        procedures=[{"name": "open_batch", "command": "open", "queries": ["get_recipe"]}],
+    )
+
+
 def _catalog_feat() -> FeatureDefinition:
     """Two projections folding one model — the fixture rule 1 exists for."""
     return _feat(
@@ -948,7 +957,8 @@ def test_validate_workers_with_projection_rejected(tmp_path: Path) -> None:
     assert any("folds" in e and "recipe_catalog" in e and "workers" in e for e in errors)
 
 
-def test_validate_workers_with_procedure_rejected(tmp_path: Path) -> None:
+def test_validate_workers_with_querying_procedure_rejected(tmp_path: Path) -> None:
+    """Rule 3: a procedure that reads a model decides on state a peer may be changing."""
     topology = load_topology(
         _write(
             tmp_path,
@@ -960,8 +970,102 @@ def test_validate_workers_with_procedure_rejected(tmp_path: Path) -> None:
             """,
         )
     )
-    errors = validate_topology(topology, _one_procedure_feat())
-    assert any("ingest_recipe" in e and "aggregate key" in e for e in errors)
+    errors = validate_topology(topology, _reading_procedure_feat())
+    assert any("open_batch" in e and "'get_recipe'" in e and "aggregate key" in e for e in errors)
+
+
+def test_validate_query_free_procedure_group_may_scale(tmp_path: Path) -> None:
+    """A procedure declaring no queries computes its events from the command alone.
+
+    Nothing a concurrent procedure does can reach it, so the group scales. This is the
+    labthing case — a paid model call reads no model — and the fan-out `expand_*` tier.
+    """
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: expand
+                workers: 32
+                catch_all: true
+            """,
+        )
+    )
+    assert validate_topology(topology, _one_procedure_feat()) == []
+
+
+def test_validate_query_free_procedure_group_may_hold_many_in_flight(tmp_path: Path) -> None:
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: expand
+                max_in_flight: 64
+                catch_all: true
+            """,
+        )
+    )
+    assert validate_topology(topology, _one_procedure_feat()) == []
+
+
+def test_validate_one_reader_serialises_a_group_of_query_free_peers(tmp_path: Path) -> None:
+    """The gate is per-element, not per-group-kind: one reader is enough to force serial."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: work
+                workers: 8
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        procedures=[
+            {"name": "ingest_recipe", "command": "ingest"},
+            {"name": "open_batch", "command": "open", "queries": ["get_recipe"]},
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert len(errors) == 1
+    # It names the reader, never the query-free peer that is not the problem.
+    assert "open_batch" in errors[0] and "ingest_recipe" not in errors[0]
+
+
+def test_validate_reader_error_names_every_query_it_reads(tmp_path: Path) -> None:
+    """The message has to say WHICH reads block the scaling, or it is not actionable."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: work
+                workers: 4
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[
+            {"name": "get_recipe", "description": "d", "model": "catalog"},
+            {"name": "check_inventory", "description": "d", "model": "catalog"},
+        ],
+        procedures=[
+            {
+                "name": "open_batch",
+                "command": "open",
+                "queries": ["get_recipe", "check_inventory"],
+            }
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert len(errors) == 1
+    assert "'get_recipe' and 'check_inventory'" in errors[0]
 
 
 def test_validate_policies_only_group_may_scale(tmp_path: Path) -> None:
@@ -1003,7 +1107,7 @@ def test_validate_workers_inherited_from_defaults(tmp_path: Path) -> None:
             """,
         )
     )
-    errors = validate_topology(topology, _one_procedure_feat())
+    errors = validate_topology(topology, _reading_procedure_feat())
     assert any("defaults.workers" in e for e in errors)
 
 
@@ -1026,7 +1130,7 @@ def test_validate_max_in_flight_with_projection_rejected(tmp_path: Path) -> None
     assert "max_in_flight is 64" in errors[0] and "log order" in errors[0]
 
 
-def test_validate_max_in_flight_with_procedure_rejected(tmp_path: Path) -> None:
+def test_validate_max_in_flight_with_querying_procedure_rejected(tmp_path: Path) -> None:
     topology = load_topology(
         _write(
             tmp_path,
@@ -1038,7 +1142,7 @@ def test_validate_max_in_flight_with_procedure_rejected(tmp_path: Path) -> None:
             """,
         )
     )
-    errors = validate_topology(topology, _one_procedure_feat())
+    errors = validate_topology(topology, _reading_procedure_feat())
     assert len(errors) == 1
     assert "max_in_flight is 64" in errors[0] and "aggregate key" in errors[0]
 
@@ -1056,13 +1160,13 @@ def test_validate_max_in_flight_inherited_from_defaults(tmp_path: Path) -> None:
             """,
         )
     )
-    errors = validate_topology(topology, _one_procedure_feat())
+    errors = validate_topology(topology, _reading_procedure_feat())
     assert len(errors) == 1
     assert "defaults.max_in_flight" in errors[0]
 
 
 def test_validate_empty_group_may_not_scale(tmp_path: Path) -> None:
-    """Only a policies-only membership may scale, and no membership is not policies."""
+    """An empty group is not a scalable one: there is no work in it to spread."""
     topology = load_topology(
         _write(
             tmp_path,

@@ -67,15 +67,12 @@ groups:
     catch_all: true
 ```
 
-Both examples scale a group of procedures, and `dizzy generate wiring` refuses that
-today. With no aggregate key in the feature-file, a procedure group cannot be *proven*
-partitionable, so the validator permits concurrency only for a group whose whole
-membership is policies — projections never, because a fold is only correct in log order.
-Concurrency means both knobs: one worker holding 64 units in flight folds 64 events at
-once exactly as 64 workers do, so the gate reads `max(workers, max_in_flight)` and names
-whichever field the author wrote. The numbers above are what these topologies want to be
-once rule 3 is expressible; until then those two groups must read `workers: 1` and
-`max_in_flight: 1`.
+Both examples scale a group of procedures, and `dizzy generate wiring` accepts that as
+long as none of those procedures declares a `queries:` — see rule 3. The paid completions
+and the `expand_*` tier both read nothing, so both scale as written. Concurrency means
+both knobs: one worker holding 64 units in flight runs 64 units at once exactly as 64
+workers do, so the gate reads `max(workers, max_in_flight)` and names whichever field the
+author wrote.
 
 Two schema decisions came directly out of writing those:
 
@@ -105,8 +102,13 @@ unrepresentable, not detectable:
    load. This is the rule a plausible-looking config is most likely to break.
 2. **Policies partition freely.** They react and dispatch; commands dedupe on
    deterministic ids, so observing events in another group's order is harmless.
-3. **Procedures partition by aggregate key.** Per-aggregate serialisation is what
-   replaces a global lock.
+3. **Procedures partition when they read nothing.** A procedure declaring no
+   `queries:` computes its events from the command alone — no concurrent peer can
+   reach it, so it parallelises freely. One that *does* query is a read-modify-write
+   over a model a peer may be changing underneath it; with no aggregate key in the
+   feature-file there is nothing to serialise it by, so a group holding one runs
+   serially. Per-aggregate keys are what would relax that second case, and until they
+   exist a reader is the only thing that pins a group to one lane.
 4. **Queries are not in groups.** They are reads over a model. Placement is a
    question about the read substrate, not the log — which is why `ElementKind`
    has no `queries` value.
@@ -173,9 +175,12 @@ Three things fall out that are not yet designed:
   work). This wants to be a declared property of the policy in the *feature-file*
   — `backfill: none | from-genesis | from-heads` — decided when the policy is
   authored, not when it is deployed.
-- **Aggregate keys.** Rule 3 says procedures partition by aggregate key, but the
-  feature-file has no notion of an aggregate today. Either it gains one, or
-  partitioning is coarser than the rule implies.
+- **Aggregate keys.** Rule 3 currently splits procedures on `queries:` — a sound
+  discriminator, but a blunt one. A procedure reading a model it never writes is
+  safe to parallelise and is refused anyway; two reading disjoint aggregates likewise.
+  An aggregate key in the feature-file is what would let the validator say yes to
+  those, and it is the difference between "reads nothing" and "reads nothing *this
+  worker is racing*".
 
 ## Does this subsume `st` and `mp`?
 
