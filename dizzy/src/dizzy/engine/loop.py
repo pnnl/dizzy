@@ -29,6 +29,14 @@ policy-dispatched command may be claimed by another worker within
 milliseconds, and that worker sees only committed state. The engine owns this
 boundary; projections never commit.
 
+That sentence is exact WITHIN A CONSUMER GROUP, which is the whole of the
+system until a topology splits one. Across groups it weakens, by design and
+not by accident: a group holding only policies has a cursor of its own, so it
+reaches an entry before — or long after — the group holding the projections
+folds it, and the fold it sees committed is that group's, not the log's tail.
+:mod:`dizzy.engine.groups` states which half survives the split and names the
+window in which even that half is not yet carried.
+
 **What keeps it feature-agnostic.** Handlers are keyed by the runtime type of
 the command/event — the generated pydantic class — so dispatch is a dict
 lookup and no name appears in this file. Registration mirrors the feat
@@ -82,6 +90,11 @@ class Engine:
         transaction to close (see the ordering rule above)."""
         self.otel = otel if otel is not None else NullOtel()
         self._events: deque = deque()
+        self.applied_positions: list[int] = []
+        """Log positions this engine appended and applied during the command
+        it is running, read back by :meth:`take_applied`. Reset by every
+        :meth:`run_command`, so a host with no worker watching it holds one
+        unit of work's worth and never grows."""
         self.current_event = None
         """The event whose policies are currently running, for wiring that
         needs to correlate a dispatch back to its cause."""
@@ -116,6 +129,15 @@ class Engine:
         refold or to replicate — one registration, three triggers.
         """
         return dict(self._projections)
+
+    def policy_runners(self) -> dict[type, list[tuple[str, PolicyRunner]]]:
+        """The event class -> ``[(name, runner)]`` map for the reactivity loop.
+
+        Mirrors :meth:`projection_runners` for the same reason: a consumer that
+        reads the log itself — :class:`dizzy.engine.groups.GroupWorker` — needs
+        the registered handlers without re-deriving them from the wiring.
+        """
+        return dict(self._policies)
 
     # ── Emit closures handed to elements ────────────────────────────────────
 
@@ -219,6 +241,7 @@ class Engine:
                 f"wiring did not register it"
             )
         name, runner = entry
+        self.applied_positions.clear()
         self._timed("procedure", name, type(command).__name__, lambda: runner(command))
         self._drain_events()
 
@@ -238,27 +261,78 @@ class Engine:
                         "detail": "",
                     }
                 )
-            # Data loop: projections fold the event, seeing the envelope's
-            # ingested_at as their second argument.
-            for name, projection in self._projections.get(type(event), []):
-                self._timed(
-                    "projection",
-                    name,
-                    envelope.type,
-                    # Every free name is bound as a default: the lambda runs
-                    # inside this iteration, but a late-binding closure over a
-                    # loop variable is a trap waiting for the first caller who
-                    # defers it.
-                    lambda p=projection, e=event, at=envelope.ingested_at: p(e, at),
-                )
-            if self.commit is not None:
-                self.commit()  # the event is folded, atomically, NOW
-            if self.observer is not None:
-                self.observer(envelope.type, event)
-            # Reactivity loop: policies dispatch commands onto the external queue.
-            self.current_event = event
-            try:
-                for name, policy in self._policies.get(type(event), []):
-                    self._timed("policy", name, envelope.type, lambda p=policy, e=event: p(e))
-            finally:
-                self.current_event = None
+            self.apply_event(event, envelope.ingested_at, envelope.type)
+            # Where the entry landed, for a worker that also tails the log:
+            # it has already been folded here and must not be folded again
+            # when the cursor reaches it. See Engine.take_applied.
+            self.applied_positions.append(envelope.position)
+
+    def apply_event(
+        self,
+        event: Any,
+        ingested_at: datetime | None = None,
+        type_name: str | None = None,
+        projections: dict[type, list[tuple[str, ProjectionRunner]]] | None = None,
+        policies: dict[type, list[tuple[str, PolicyRunner]]] | None = None,
+    ) -> None:
+        """Fold one event, commit, observe, then run its policies.
+
+        The ordering rule in one place, so the two things that consume an event
+        — :meth:`_drain_events`, for an entry this process just appended, and a
+        group worker, for one it read back out of the log — cannot drift apart.
+        It deliberately does NOT append: an entry reaching this method is
+        already a fact, whoever wrote it.
+
+        *projections* and *policies* override the registered maps, which is how
+        a worker runs one consumer group's subset of the topology through the
+        engine's order without a second engine. *type_name* is the stream's
+        name for the event, used only for telemetry; it falls back to the
+        class name so a caller holding no envelope need not invent one.
+        """
+        projections = self._projections if projections is None else projections
+        policies = self._policies if policies is None else policies
+        label = type_name or type(event).__name__
+        # Data loop: projections fold the event, seeing ingested_at as their
+        # second argument.
+        for name, projection in projections.get(type(event), []):
+            self._timed(
+                "projection",
+                name,
+                label,
+                # Every free name is bound as a default: the lambda runs
+                # inside this iteration, but a late-binding closure over a
+                # loop variable is a trap waiting for the first caller who
+                # defers it.
+                lambda p=projection, e=event, at=ingested_at: p(e, at),
+            )
+        if self.commit is not None:
+            self.commit()  # the event is folded, atomically, NOW
+        if self.observer is not None:
+            self.observer(label, event)
+        # Reactivity loop: policies dispatch commands onto the external queue.
+        self.current_event = event
+        try:
+            for name, policy in policies.get(type(event), []):
+                self._timed("policy", name, label, lambda p=policy, e=event: p(e))
+        finally:
+            self.current_event = None
+
+    def take_applied(self) -> tuple[int, ...]:
+        """The log positions the last :meth:`run_command` appended and applied.
+
+        A hybrid group both runs commands here and tails the log, and those two
+        intakes see the same entries: the fold happened inline, and the cursor
+        then walks over the very same rows. Handing the positions to the worker
+        is what stops the second pass from re-running policies that already
+        dispatched — the tolerated case is a crash, not every command.
+
+        Engine-wide and destructive, so it serves exactly ONE worker: two
+        workers over one engine would consume each other's positions. That is
+        the same constraint the inline cascade already imposes — an engine
+        registered with one group's elements, per
+        :class:`dizzy.engine.groups.GroupWorker` — restated at the seam where
+        it would otherwise be discovered by a double dispatch.
+        """
+        applied = tuple(self.applied_positions)
+        self.applied_positions.clear()
+        return applied
