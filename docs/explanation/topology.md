@@ -209,14 +209,72 @@ be what it says it is should not be representable:
 
 ## What a group worker does
 
-The loop, once per doorbell or poll:
+A group is a unit of *serialization*, not a unit of intake. It has one lane of
+execution and up to two intakes.
+
+**Event intake — a cursor.** A group claiming projections or policies holds one
+cursor over the log:
 
 ```
-read cursor  →  fetch log entries after it  →  for each, run the elements
-this group claims  →  commit their effects  →  advance cursor
+read cursor  →  fetch log entries after it  →  fold this group's projections  →
+commit  →  run this group's policies  →  advance cursor
 ```
 
-Two properties make that safe to distribute:
+That is `Engine._drain_events`'s body with the append taken out of it, in the
+same order, so the four sequential statements survive the split verbatim.
+
+**Command intake — a lane.** A group claiming procedures holds one lane of the
+durable command queue, named after the group. No cursor is involved: a command
+is not in the log, so there is no position to hold. A policy's dispatch is
+to be routed to the lane of the group claiming that command's procedure, from a
+table the generator will compute out of the topology — so nothing in `engine/`
+learns a command name. That table does not exist yet: today `dizzy generate
+wiring` has no notion of groups, and a topology is validated rather than
+executed.
+
+**Most groups are both**, because rule 6 fuses readers with the folds they read
+and readers are mostly procedures. A hybrid worker's cycle is **fold to tail →
+run one command → fold to tail**. The leading fold is what carries the central
+guarantee across a group split: a policy-dispatched command is causally after
+the append of the event that triggered it, and positions are local insertion
+order, so a worker whose fold covers the command's arrival in the lane has
+necessarily already folded that command's triggering event. It needs no
+coordination, but it does need the fold to be taken *after* the claim, and
+`GroupWorker`'s command intake is today one opaque callable that claims and
+runs together — so a claim that blocks returns after the fold, and an event
+appended during that wait is not in the model the command reads. Closing that
+window means splitting the intake into claim and run; until it is, the property
+this paragraph states is the intent and not yet the behaviour. The trailing
+fold is for `run_command`'s own post-condition —
+that projections have folded by the time it returns — which every host that runs
+a command and then renders depends on.
+
+The guarantee that survives the split is not quite the one `_drain_events`
+states. It is: **the read model commits before the dispatched command runs.**
+Inside one group those are the same sentence; across groups only the second is
+available, and it is the half anything downstream actually needed. What is given
+up with it: a hybrid group folds to *tail*, so it also folds entries another
+group appended that a sequential run would have ordered later, and a procedure
+branching on that reads a model further ahead than `st` would have handed it.
+Models still converge — that is confluence — but two topologies' logs need not
+agree entry for entry, which is the residual the last section names.
+
+The expectation that goes with rule 6 — and it is an expectation, with no
+harness in the tree yet to hold it: over randomized interleavings of a fixture,
+one hybrid group should reproduce `st`'s read models *and* its stream entry for
+entry, a rule-6-legal split should diverge in neither, and a layout that
+violates rule 6 should diverge in some of them by reading an empty model,
+dispatching nothing, and killing a cascade permanently. That is what the
+property test named at the end of this document is for; no number here has been
+measured, and none should be quoted until it has.
+
+The cost is a fairness policy the earlier draft never contemplated. A hybrid
+worker chooses between draining its lane and advancing its cursor;
+commands-first starves folding under replication load, folds-first starves
+commands under fan-out. Whatever that rule is, it is part of the defined
+semantics the way the shell already is.
+
+Two properties make the loop safe to distribute:
 
 **The transport is a doorbell only.** It carries "wake up, there is work" and
 nothing else. Correctness comes from the cursor, so a dropped notification costs
@@ -251,37 +309,103 @@ child as a root and emits it before its parent — reproduced unforced in ~0.85%
 concurrent passes. Nothing tails the log today, which is the only reason that is
 latent.
 
-## The open question: what is a command's durable home?
 
-This is the crux, and the draft does not settle it.
+### What `workers: N` buys, per kind of group
 
-A group's cursor runs over the **event** log. But procedures consume **commands**,
-and a command is not an event — it is a request that may still be refused. So
-what does a procedure group's cursor actually read?
+`save` is monotone, which makes a cursor one lane's watermark and *not* a thing
+two workers may split: the leader's save covers a prefix the laggard never
+committed, and the crash loses that work silently. So the knob answers three
+different ways, and conflating them is how it becomes a lie.
 
-Durability cannot come from a second store. An event commits, the process dies,
-the intent was never enqueued, and nothing will ever produce it — that crash
-window is exactly why "add a durable queue" is the wrong answer.
+- **A group holding a projection or any reader.** Refused, as today — rules 1
+  and 3 pin it to one lane and `_effective_concurrency` already errors.
+- **A procedure-only group.** N workers on one lane, and genuinely just
+  operations — with one prerequisite. `claim` is a `SELECT` then an `UPDATE`
+  guarded by a `threading.Condition`, which serializes one *process*, not one
+  machine: two connections on one file claim the same row. Until it is a
+  conditional `UPDATE ... WHERE status='queued'` with a rowcount retry,
+  `workers: 2` runs concurrently what the operator was told was merely retried.
+- **An event-only group of non-reading policies.** N cursors, not one. Worker
+  *k* of *N* owns `<group>#k/N`, reads the whole stream from its own position,
+  acts on the entries whose content hash mod N is *k*, and saves on every entry
+  whether it acted or skipped — a skipped entry is done, by ownership. Each
+  watermark is then honest and a crash re-delivers one shard's tail. The price
+  is that changing N invalidates every assignment: the only safe reshard is to
+  rewind all N cursors to the lowest and replay, which is safe only because
+  those policies read nothing and commands dedupe on deterministic ids — the
+  property this document now rests on twice and still has no test for.
 
-The resolution that seems to follow: **record command requests in the log too.**
-One substrate, one transaction. A procedure group's work is then "requests not
-yet followed by their outcome", which is a projection of the log like any other,
-and the cursor model needs no special case.
+Rejected: one cursor, N workers, disjoint batches. That is the at-most-once hole
+`save`'s monotonicity hides rather than fixes.
 
-What it buys the fan-out consumer is more than durability. Every unit of work
-becomes a fact, so "which of the thousand failed, and why" is a query over the
-log rather than a grep over worker output. Dead-lettering stops being a transport
-feature and becomes a recorded outcome.
+## Where a command lives — decided, and what was deferred
 
-What it costs is volume — roughly two log entries per unit of work instead of
-one. For 1000 artifacts that is 2000 entries where there were 1000. Probably
-acceptable; needs measuring before it is a decision rather than a hunch.
+Two answers were built and measured against each other. This is the one that
+lands; the reasoning matters more than the verdict, because the other one may
+still be right later.
 
-Three things fall out that are not yet designed:
+**Decided: a command's durable home stays the queue, and a procedure group has
+no cursor.** A group gets a cursor if and only if it claims something that
+consumes the log. Procedures consume commands, commands stay in
+`st.DurableCommandQueue`, one lane per group. The question "what does a
+procedure group's cursor read?" is answered by refusing its premise rather than
+by inventing a reading.
 
-- **Externally-originated commands.** A command from an API call has no
-  triggering event. It becomes the first entry rather than a derived one — fine,
-  but it means the log's genesis is not always an event.
+That narrows the crash window without a second substrate. A cursor-driven policy
+group saves its cursor only after the `put` has committed, so a crash between an
+event's append and the enqueue leaves the cursor unadvanced, the policy re-runs
+on the same entry, and the command is re-dispatched. For the reactivity loop the
+window that made "add a durable queue" the wrong answer is shut.
+
+What stays open, said plainly:
+
+- **Externally-originated commands.** An API call that dies before its `put`
+  commits is gone, with no log entry to re-derive it; only a client retry
+  recovers it. The log's genesis still is not always an event.
+- **A new hazard, from the cursor rather than despite it.** `command_queue.db`
+  is a second file beside the event store. Lose it and every queued, unclaimed
+  command vanishes while the policy group's cursor has already advanced past the
+  events that produced them — a durable record asserting work that never
+  happened. Today `st` has the same file and no cursor to be wrong about, so a
+  rebuild recovers. Under this design, dropping that file must be paired with
+  rewinding every policy group's cursor. An operational coupling between two
+  stores is exactly the smell this section opened by naming: it has been moved
+  and made quieter, not removed.
+
+**Deferred: recording command requests in the log.** It is still the better
+answer, and it was built far enough to say precisely why it is not this
+increment's. Shaped as a parentless entry in a reserved type namespace —
+edgeless, so it never enters ancestry, never replicates, and never perturbs
+canonical order — it passes the conformance suite unmodified, and "requests not
+yet followed by their outcome" becomes an ordinary read model, rebuilt from zero
+in tens of milliseconds. Three things have to be true first:
+
+- **The back-reference is inside the hash.** Naming the request in the event's
+  wrapper changes every caused event's id, because the wrapper *is* the hashed
+  payload. That is a hash-format decision, not a storage one, and it belongs in
+  its own change.
+- **`heads()` has to learn a type predicate**, or parentless requests become
+  permanent heads and the next append drags them back into ancestry. Editing the
+  correctness kernel is not a side effect of a topology increment. `iterate`,
+  `__len__` and `seq` need the same filter, and every omission is silent in a
+  different way.
+- **`append` is quadratic** — `heads()` is an unindexed anti-join run inside
+  every append, so doubling the entries per unit of work more than doubles the
+  ingest cost. A maintained frontier table flattens it, is worth doing on its
+  own, and is a prerequisite here.
+
+One variant must not be revived: parenting each entry on the entry its element
+consumed. It turns the chain into a branching DAG, canonical order then
+tiebreaks concurrent siblings on a hash containing `ingested_at`, and two runs
+of the same script iterate in different orders — which fails
+`test_the_sequential_shell_is_deterministic` and, worse, breaks the convergence
+invariant the DAG exists to provide. Dropping `ingested_at` from the hash
+repairs it, at the cost of the append time no longer being part of the
+hash-protected fact. That is a decision on its own evidence, not a step in this
+one.
+
+Two things named earlier are still not designed:
+
 - **Backfill for a new policy.** A policy added today cannot sensibly default its
   cursor to zero (it re-dispatches all history) or to head (it silently skips
   work). This wants to be a declared property of the policy in the *feature-file*
@@ -302,7 +426,10 @@ Three things fall out that are not yet designed:
 Possibly, and that is worth deciding deliberately rather than discovering.
 
 `st` falls out as a topology: one group, `inprocess` transport, `memory` cursors,
-one worker. If that is true, `st` stops being a shell and becomes a default.
+one worker. It is a *hybrid* group — it claims procedures, so it holds a lane as
+well as a cursor, and both intakes are served by the one thread. That is the
+degenerate case of the loop above and not a special one, which is the whole
+reason to believe it: `st` stops being a shell and becomes a default.
 
 `mp` is a harder case, because its model differs rather than specialises. Its
 unit of distribution is the *command*, routed at dispatch by the app's `routes()`
