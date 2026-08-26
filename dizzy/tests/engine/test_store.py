@@ -259,6 +259,24 @@ def test_positions_are_monotonic_and_survive_a_mid_stream_replication(store):
     assert [e.position for e in tail] == sorted(e.position for e in tail)
 
 
+def test_appends_position_names_its_own_row_under_a_second_writer(tmp_path):
+    """The position `append` hands back must be the row it wrote, not a count
+    of the file. Two stores on one path is the multi-process shape a consumer
+    group exists for, and a position naming a PEER's row would make a hybrid
+    worker skip an entry it never folded — silent at-most-once."""
+    a = EventStore(path=tmp_path / "events.db", event_classes=EVENT_CLASSES)
+    b = EventStore(path=tmp_path / "events.db", event_classes=EVENT_CLASSES)
+    written = [
+        a.append(RecipeDefined(recipe_id="a1")),
+        b.append(RecipeDefined(recipe_id="b1")),
+        a.append(RecipeDefined(recipe_id="a2")),
+    ]
+    by_position = {e.position: e.payload["recipe_id"] for e in written}
+    assert len(by_position) == 3
+    for envelope in a.iterate_from(0):
+        assert by_position[envelope.position] == envelope.payload["recipe_id"]
+
+
 def test_the_cursor_order_still_puts_parents_before_children(store):
     """Insertion order is not canonical order, but it is always *a* causal
     order — that is what makes it safe to fold."""

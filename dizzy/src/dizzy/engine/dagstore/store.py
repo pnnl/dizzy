@@ -63,11 +63,22 @@ class DagStore:
 
     def append(self, type: str, payload: dict[str, Any]) -> Event:
         """Mint a new event on top of the current heads and store it."""
+        return self.append_positioned(type, payload)[1]
+
+    def append_positioned(self, type: str, payload: dict[str, Any]) -> tuple[int, Event]:
+        """:meth:`append`, plus the row's position — the rowid `read_after` yields.
+
+        Taken from the INSERT itself rather than recomputed afterwards, because
+        the only honest source of a row's position is the statement that wrote
+        it: a count taken after the transaction closes is another writer's
+        answer the moment a second process shares the file, and a consumer that
+        both appends and tails the log would then skip an entry it never saw.
+        """
         with self._db:
             self._db.execute("BEGIN IMMEDIATE")
             event = make_event(type, self.heads(), payload)
-            self._insert(event)
-        return event
+            position = self._insert(event)
+        return position, event
 
     def add(self, event: Event) -> bool:
         """Ingest a replicated event. Returns False if already present.
@@ -88,8 +99,9 @@ class DagStore:
             self._insert(event)
         return True
 
-    def _insert(self, event: Event) -> None:
-        self._db.execute(
+    def _insert(self, event: Event) -> int:
+        """Store one event and its edges; return the row's position (rowid)."""
+        cursor = self._db.execute(
             "INSERT INTO events (id, type, payload) VALUES (?, ?, ?)",
             (event.id, event.type, json.dumps(event.payload, ensure_ascii=False)),
         )
@@ -97,6 +109,7 @@ class DagStore:
             "INSERT INTO edges (child, parent) VALUES (?, ?)",
             [(event.id, p) for p in event.parents],
         )
+        return int(cursor.lastrowid or 0)
 
     # ── read ─────────────────────────────────────────────────────────────
 

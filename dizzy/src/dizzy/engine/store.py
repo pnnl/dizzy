@@ -78,9 +78,10 @@ class Envelope:
     seq: int = -1
     """DERIVED iteration index, not stored."""
     position: int = -1
-    """Cursor watermark in LOCAL INSERTION order — set only by
-    :meth:`EventStore.iterate_from`, which explains what it is safe for.
-    ``-1`` from every other path, because there is nothing to resume from."""
+    """Cursor watermark in LOCAL INSERTION order — set by
+    :meth:`EventStore.iterate_from`, which explains what it is safe for, and by
+    :meth:`EventStore.append` for the entry it just wrote. ``-1`` from every
+    other path, because there is nothing to resume from."""
 
 
 def reconstruct_event(envelope: Envelope, event_classes: Mapping[str, type]) -> Any:
@@ -143,15 +144,21 @@ class EventStore:
             "event": _stringify_floats(event.model_dump(mode="json")),
         }
         with self._lock:
-            dag_event = self.dag.append(snake_case(type(event).__name__), wrapped)
-            seq = len(self.dag) - 1
+            position, dag_event = self.dag.append_positioned(
+                snake_case(type(event).__name__), wrapped
+            )
+        # The position is the row's own rowid, read out of the INSERT that wrote
+        # it, so it names THIS entry under any number of writers on the file.
+        # Returned so a consumer that both appends and tails the log can tell
+        # which entries it has already handled; every other path leaves the -1.
         return Envelope(
             id=dag_event.id,
             type=dag_event.type,
             ingested_at=stamped,
             payload=wrapped["event"],
             parents=dag_event.parents,
-            seq=seq,
+            seq=position - 1,
+            position=position,
         )
 
     def iterate(self) -> Iterator[Envelope]:
