@@ -133,6 +133,58 @@ class DagStore:
     def ids(self) -> frozenset[str]:
         return frozenset(r[0] for r in self._db.execute("SELECT id FROM events"))
 
+    def read_after(self, position: int = 0, limit: int = 256) -> list[tuple[int, Event]]:
+        """One batch of events in LOCAL INSERTION order, after *position*.
+
+        The position is the row's SQLite rowid. It is deliberately not the
+        canonical iteration index: canonical order is a pure function of the
+        event set, so a replicated event splices into the MIDDLE of it and
+        renumbers everything downstream of the fork — a stored integer index
+        into `iterate` is meaningless the moment a peer's fact arrives.
+        Insertion order has the two properties a resumable cursor actually
+        needs instead: its prefix never changes (rows are only appended), and
+        it is always a valid causal order, because `append` parents on rows
+        already inserted and `add` refuses an event whose parents are absent.
+
+        The price is that it is NODE-LOCAL — two nodes holding the same events
+        insert them in different orders — so a position must never be sent to
+        or compared against a peer.
+
+        Rowids are reusable in a table without AUTOINCREMENT. Nothing here
+        ever deletes, so the watermark cannot be reused today — but that is a
+        precondition this method rests on rather than one it can check, and
+        breaking it is silent: freeing a rowid and appending hands the new
+        event a position a live cursor has already passed, and that fact is
+        never delivered. Anything that learns to delete an event row must
+        promote this to an explicit monotonic column (AUTOINCREMENT, or a
+        sequence of its own) in the same change.
+        """
+        rows = self._db.execute(
+            "SELECT rowid, id, type, payload FROM events WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            (position, limit),
+        ).fetchall()
+        if not rows:
+            return []
+        ids = [r[1] for r in rows]
+        parents: dict[str, list[str]] = {}
+        marks = ",".join("?" * len(ids))
+        for child, parent in self._db.execute(
+            f"SELECT child, parent FROM edges WHERE child IN ({marks}) ORDER BY parent", ids
+        ):
+            parents.setdefault(child, []).append(parent)
+        return [
+            (
+                row[0],
+                Event(
+                    id=row[1],
+                    type=row[2],
+                    parents=tuple(parents.get(row[1], ())),
+                    payload=json.loads(row[3]),
+                ),
+            )
+            for row in rows
+        ]
+
     def iterate(self) -> Iterator[Event]:
         """Yield every event in canonical replay order.
 

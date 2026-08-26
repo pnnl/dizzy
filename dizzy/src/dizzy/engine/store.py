@@ -10,7 +10,11 @@ order.
 
 ``seq`` is not stored. The :class:`Envelope` still carries one as a *derived*
 iteration index — this node's chain is linear, so topological order equals
-append order — which keeps "events since N" consumers working.
+append order — which keeps "events since N" consumers working. It is valid
+only for the pass that produced it: a replicated fact splices into the middle
+of canonical order and renumbers everything after the fork, so ``seq`` must
+never be persisted as a resume point. :meth:`EventStore.iterate_from` exists
+for that, and hands back a prefix-stable ``position`` instead.
 
 Floats in payloads are stringified before hashing: the canonical form forbids
 them for cross-language stability, and pydantic's lax coercion restores them
@@ -73,6 +77,10 @@ class Envelope:
     parents: tuple = ()
     seq: int = -1
     """DERIVED iteration index, not stored."""
+    position: int = -1
+    """Cursor watermark in LOCAL INSERTION order — set only by
+    :meth:`EventStore.iterate_from`, which explains what it is safe for.
+    ``-1`` from every other path, because there is nothing to resume from."""
 
 
 def reconstruct_event(envelope: Envelope, event_classes: Mapping[str, type]) -> Any:
@@ -159,6 +167,53 @@ class EventStore:
                 parents=ev.parents,
                 seq=i,
             )
+
+    def iterate_from(self, position: int = 0) -> Iterator[Envelope]:
+        """Yield every envelope after *position*, oldest first — the seek a
+        resumable consumer needs. ``position=0`` yields the whole stream.
+
+        The position is a watermark in this node's INSERTION order, taken from
+        the ``position`` field of the last envelope the consumer finished. An
+        integer index into :meth:`iterate` would NOT work and is not what this
+        returns: canonical order is a pure function of the event set, so a
+        replicated fact splices into the middle of it and renumbers every event
+        downstream of the fork — a saved canonical index silently starts
+        pointing at a different event. Insertion order is prefix-stable and
+        always causally valid (parents are inserted before children), which is
+        exactly the guarantee a cursor rests on.
+
+        Two consequences a caller must live with:
+
+        * The order is NOT canonical — a replicated fact arrives at the tail
+          even when it belongs mid-stream causally. Ancestors still precede
+          descendants, so a confluent projection folds it correctly, but two
+          nodes will not agree on this sequence. A position is node-local
+          state: never replicate one, never compare one across peers.
+        * A consumer resuming from a saved position sees events *appended*
+          after it, including replicated ones that predate it causally. That
+          is the point — it is how a peer's backfill reaches a live worker at
+          all — but it means the delta is not a canonical-order suffix.
+
+        Cost: a true index seek on rowid, not a scan of the stream, and the
+        rows stream in batches, so resuming near the tail of a large store
+        costs the tail. This is the only read path here that does; a
+        canonical-order resume could not, because Kahn's algorithm has to
+        reconstruct state for the entire event set before it can emit anything.
+        """
+        while True:
+            with self._lock:
+                batch = self.dag.read_after(position)
+            if not batch:
+                return
+            for position, ev in batch:
+                yield Envelope(
+                    id=ev.id,
+                    type=ev.type,
+                    ingested_at=datetime.fromisoformat(ev.payload["ingested_at"]),
+                    payload=ev.payload["event"],
+                    parents=ev.parents,
+                    position=position,
+                )
 
     def heads(self) -> tuple:
         with self._lock:

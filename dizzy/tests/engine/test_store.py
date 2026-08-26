@@ -131,3 +131,154 @@ def test_the_store_path_can_come_from_the_environment(tmp_path, monkeypatch):
     store = EventStore(event_classes=EVENT_CLASSES)
     assert store.path == tmp_path / "nested" / "events.db"
     assert store.path.parent.is_dir()
+
+
+# ── canonical order is not a stable coordinate system ────────────────────────
+
+
+def _peer_fork(parent_id, recipe_id="p1", below=None):
+    """Mint a fact on a *peer*, forking off ``parent_id``.
+
+    Built with the dagstore's own primitives so the hash is real: this is
+    exactly the shape `replicate.pull` delivers.
+
+    ``below`` searches for a payload whose content hash sorts below that id.
+    Canonical order tiebreaks concurrent siblings by hash, so without pinning
+    the tiebreak a fork test would pass or fail on the luck of a sha-256 —
+    the search makes "the peer wins the tiebreak" a stated precondition
+    instead of a coin flip.
+    """
+    from dizzy.engine.dagstore.events import make_event
+
+    stamped = datetime(2026, 1, 1, tzinfo=UTC).isoformat()
+    for n in range(10_000):
+        name = recipe_id if below is None else f"{recipe_id}-{n}"
+        event = make_event(
+            "recipe_defined",
+            (parent_id,),
+            {"ingested_at": stamped, "event": {"recipe_id": name, "servings": 1}},
+        )
+        if below is None or event.id < below:
+            return event
+    raise AssertionError("no payload hashed below the sibling — vanishingly unlikely")
+
+
+def test_add_replicated_splices_into_the_middle_of_canonical_order(store):
+    """THE finding a cursor design turns on: a replicated fact does NOT land at
+    the end of `iterate()`. It lands wherever its parent puts it, renumbering
+    every event after the fork — so a stored canonical index is not a position,
+    it is a guess that goes stale the first time a peer's fact arrives.
+    """
+    locals_ = [store.append(RecipeDefined(recipe_id=f"r{i}")) for i in range(5)]
+    before = [e.id for e in store.iterate()]
+
+    # Fork off the SECOND local event, the way a peer that had only seen r0/r1
+    # would have. Its sibling is r2, and the id tiebreak decides which of the
+    # two goes first — but either way it precedes everything downstream of r2.
+    peer = _peer_fork(locals_[1].id, below=locals_[2].id)
+    store.add_replicated(peer)
+
+    after = [e.id for e in store.iterate()]
+    assert after.index(peer.id) < len(after) - 1, "replicated fact did not land at the tail"
+    assert after[:2] == before[:2], "the prefix before the fork must not move"
+    moved = [eid for eid in before[2:] if before.index(eid) != after.index(eid)]
+    assert moved == before[2:], "every event after the fork should have been renumbered"
+
+
+def test_a_saved_canonical_seq_points_at_a_different_event_after_replication(store):
+    """The same finding stated as the consequence: seq is not a cursor."""
+    store.append(RecipeDefined(recipe_id="r1"))
+    store.append(RecipeDefined(recipe_id="r2"))
+    first, second = list(store.iterate())
+    assert second.seq == 1
+
+    store.add_replicated(_peer_fork(first.id, below=second.id))
+    at_seq_1 = list(store.iterate())[1]
+    assert at_seq_1.id != second.id
+
+
+# ── iterate_from: the resumable cursor ───────────────────────────────────────
+
+
+def test_iterate_from_zero_is_the_whole_stream(store):
+    for i in range(3):
+        store.append(RecipeDefined(recipe_id=f"r{i}"))
+    assert [e.payload["recipe_id"] for e in store.iterate_from(0)] == ["r0", "r1", "r2"]
+
+
+def test_iterate_from_an_empty_store_yields_nothing(store):
+    assert list(store.iterate_from(0)) == []
+    assert list(store.iterate_from(999)) == []
+
+
+def test_iterate_from_past_the_end_yields_nothing(store):
+    store.append(RecipeDefined(recipe_id="r1"))
+    (only,) = list(store.iterate_from(0))
+    assert list(store.iterate_from(only.position)) == []
+
+
+def test_a_worker_resumes_with_no_gap_and_no_repeat(store):
+    """The property the whole thing exists for."""
+    for i in range(10):
+        store.append(RecipeDefined(recipe_id=f"r{i}"))
+
+    seen = []
+    for envelope in store.iterate_from(0):
+        seen.append(envelope.payload["recipe_id"])
+        if len(seen) == 4:
+            break
+    checkpoint = envelope.position
+
+    tail = list(store.iterate_from(checkpoint))
+    assert [e.payload["recipe_id"] for e in tail] == [f"r{i}" for i in range(4, 10)]
+
+    checkpoint = tail[-1].position
+    assert list(store.iterate_from(checkpoint)) == []
+
+    for i in range(10, 13):
+        store.append(RecipeDefined(recipe_id=f"r{i}"))
+    more = list(store.iterate_from(checkpoint))
+    assert [e.payload["recipe_id"] for e in more] == ["r10", "r11", "r12"]
+    assert seen + [e.payload["recipe_id"] for e in tail] + [
+        e.payload["recipe_id"] for e in more
+    ] == [f"r{i}" for i in range(13)]
+
+
+def test_positions_are_monotonic_and_survive_a_mid_stream_replication(store):
+    """A replicated fact appends at the cursor's tail even though canonically
+    it belongs in the middle — so a saved position stays valid, and the worker
+    is handed the peer's fact rather than skipping over it."""
+    locals_ = [store.append(RecipeDefined(recipe_id=f"r{i}")) for i in range(4)]
+    checkpoint = list(store.iterate_from(0))[1].position
+
+    peer = _peer_fork(locals_[0].id, below=locals_[1].id)
+    store.add_replicated(peer)
+
+    tail = list(store.iterate_from(checkpoint))
+    assert [e.id for e in tail] == [locals_[2].id, locals_[3].id, peer.id]
+    assert [e.position for e in tail] == sorted(e.position for e in tail)
+
+
+def test_the_cursor_order_still_puts_parents_before_children(store):
+    """Insertion order is not canonical order, but it is always *a* causal
+    order — that is what makes it safe to fold."""
+    locals_ = [store.append(RecipeDefined(recipe_id=f"r{i}")) for i in range(3)]
+    store.add_replicated(_peer_fork(locals_[0].id, below=locals_[1].id))
+    emitted: set[str] = set()
+    for envelope in store.iterate_from(0):
+        assert all(p in emitted for p in envelope.parents)
+        emitted.add(envelope.id)
+
+
+def test_iterate_from_crosses_its_batch_boundary(store):
+    """Batching is an implementation detail; the stream must not stutter at it."""
+    import inspect
+
+    from dizzy.engine.dagstore import DagStore
+
+    n = int(inspect.signature(DagStore.read_after).parameters["limit"].default) + 5
+    for i in range(n):
+        store.append(RecipeDefined(recipe_id=f"r{i}"))
+    got = list(store.iterate_from(0))
+    assert [e.payload["recipe_id"] for e in got] == [f"r{i}" for i in range(n)]
+    assert len({e.position for e in got}) == n
