@@ -6,7 +6,7 @@ A consumer group is a set of elements sharing one cursor over the event log
     read cursor -> fetch entries after it -> run the elements this group
     claims -> commit their effects -> advance the cursor
 
-which is :meth:`Engine._drain_events`'s body with the append taken out of it,
+which is :meth:`Engine.ingest`'s body with the append taken out of it,
 in the same order — so the sequence survives the split verbatim. The fold and
 the commit are not re-implemented here: the worker calls
 :meth:`Engine.apply_event`, handing it the group's subset of the registered
@@ -25,7 +25,7 @@ event. The trailing fold restores ``run_command``'s own post-condition —
 projections have folded by the time it returns.
 
 The guarantee that survives the split is therefore not quite
-``_drain_events``'s. It is: **the read model commits before the dispatched
+``ingest``'s. It is: **the read model commits before the dispatched
 command runs.** Inside one group those are the same sentence; across groups
 only the second is available.
 
@@ -55,10 +55,13 @@ interchangeable, and why this module ships only ``inprocess`` and takes any
 other as an argument.
 
 **Not yet wired.** No shell constructs a :class:`GroupWorker`: ``st`` and
-``mp`` still drain through :meth:`Engine._drain_events`, the generator emits no
-per-group wiring and no command-to-lane table, and topology.yaml is validated
-rather than executed. This module is the mechanism a topology will be run
-through, and everything below describes what it does, not a shipped deployment.
+``mp`` still drain through :meth:`Engine.ingest`, and topology.yaml is
+validated rather than executed. The generator now emits the command-to-lane
+table (``COMMAND_PLACEMENT``/``LANES`` in the wiring), but nothing reads it —
+the executor that would serve two lanes from it is what is missing, along with
+any per-group wiring. This module is the mechanism a topology will be run
+through, and everything below describes what it does, not a shipped
+deployment.
 
 **Nothing here names a command, event, or environment field.** The elements a
 group claims arrive as arguments — the maps the wiring already built for the

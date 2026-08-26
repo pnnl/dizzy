@@ -12,9 +12,13 @@ policies.
     handed to its policies (the reactivity loop), which dispatch further
     commands.
 
+``run_command`` is the composition of two public halves — ``run_procedure``,
+which touches no store and so may run in another process, and ``ingest``,
+which is the log's only writer.
+
 **The two loops, and where the second one lives.** ``run_command`` runs the
-procedure, whose emits land in the local FIFO event queue; ``_drain_events``
-drains that queue to empty. A policy's dispatched command never runs inline —
+procedure, whose emits land in the local FIFO event queue; ``ingest`` appends
+and applies that queue to empty. A policy's dispatched command never runs inline —
 it goes to the OUTER command queue and becomes the next unit of work. So the
 defined "drain the event queue, then drain the command queue, repeat" semantics
 are real here, but only the first phase is owned by this class: **the shell is
@@ -91,10 +95,14 @@ class Engine:
         self.otel = otel if otel is not None else NullOtel()
         self._events: deque = deque()
         self.applied_positions: list[int] = []
-        """Log positions this engine appended and applied during the command
-        it is running, read back by :meth:`take_applied`. Reset by every
-        :meth:`run_command`, so a host with no worker watching it holds one
-        unit of work's worth and never grows."""
+        """Log positions this engine appended and applied during the unit of
+        work it is running, read back by :meth:`take_applied`. Reset by
+        :meth:`run_command` and drained by :meth:`take_applied`, and by nothing
+        else: a unit may :meth:`ingest` more than once (a host driving the two
+        halves itself does exactly that), and every batch's positions must
+        survive until the worker asks for them. A host that drives the halves
+        owns the unit boundary, which it marks by calling
+        :meth:`take_applied`."""
         self.current_event = None
         """The event whose policies are currently running, for wiring that
         needs to correlate a dispatch back to its cause."""
@@ -184,9 +192,20 @@ class Engine:
             ms, {"dizzy.kind": kind, "dizzy.name": name, "dizzy.outcome": outcome}
         )
 
-    def _timed(self, kind: str, name: str, trigger: str, fn: Callable[[], None]) -> None:
+    def _timed(
+        self,
+        kind: str,
+        name: str,
+        trigger: str,
+        fn: Callable[[], None],
+        extra: dict | None = None,
+    ) -> None:
         """Run one element, emitting a start-end record to the bus (if any) and
         an OTel span (a no-op under the null provider).
+
+        *extra* is merged into both records — it is how a caller running an
+        element somewhere other than the main lane says so, without this file
+        knowing what lanes there are.
 
         Exceptions propagate after being recorded — the engine observes, it
         does not swallow.
@@ -212,6 +231,7 @@ class Engine:
                         "duration_ms": dur,
                         "outcome": "error",
                         "detail": f"{type(exc).__name__}: {exc}",
+                        **(extra or {}),
                     }
                 )
                 raise
@@ -225,6 +245,7 @@ class Engine:
                     "duration_ms": dur,
                     "outcome": "ok",
                     "detail": "",
+                    **(extra or {}),
                 }
             )
 
@@ -233,7 +254,38 @@ class Engine:
     def run_command(self, command: Any) -> None:
         """Run one command to quiescence: its procedure, then every event that
         cascades from it. Returns when the local event queue is empty; any
-        command a policy dispatched is by then on the external queue."""
+        command a policy dispatched is by then on the external queue.
+
+        The composition of the two halves below, which is all it is: they are
+        split so a host can put the halves in different processes.
+        """
+        # The unit of work is the reset boundary for the applied positions, and
+        # this method is the only place that boundary is known: a half on its
+        # own cannot tell whether it opens a unit or continues one.
+        self.applied_positions.clear()
+        self.ingest(self.run_procedure(command))
+
+    def run_procedure(self, command: Any, lane: str | None = None) -> list[Any]:
+        """Run one command's procedure and return the events it emitted, in
+        order, WITHOUT appending them.
+
+        This half touches no store, which is what lets it run somewhere else:
+        a pooled child gets a command in and hands events back, and the log
+        keeps exactly one writer — whoever calls :meth:`ingest`. *lane* is
+        stamped onto the procedure's bus record so telemetry can say where it
+        ran; the engine neither interprets it nor knows the lane names.
+
+        A raising procedure leaves what it emitted on the queue, as before —
+        the shell drops it with :meth:`discard_pending_events` so a half-run
+        command cannot hand its events to the next one.
+
+        Only the WRITE side is free of the store. A procedure that queries a
+        read model still reads one, and running it elsewhere hands it whatever
+        model that process holds — so a host that moves this half off the lane
+        owes the procedure a model carrying everything :meth:`ingest` has
+        already committed. Nothing here can check that, and a host that gets it
+        wrong sees a procedure decide on stale state, not a reordering.
+        """
         entry = self._procedures.get(type(command))
         if entry is None:
             raise KeyError(
@@ -241,11 +293,40 @@ class Engine:
                 f"wiring did not register it"
             )
         name, runner = entry
-        self.applied_positions.clear()
-        self._timed("procedure", name, type(command).__name__, lambda: runner(command))
-        self._drain_events()
+        self._timed(
+            "procedure",
+            name,
+            type(command).__name__,
+            lambda: runner(command),
+            extra=None if lane is None else {"lane": lane},
+        )
+        emitted = list(self._events)
+        self._events.clear()
+        return emitted
 
-    def _drain_events(self) -> None:
+    def ingest(self, events: Any) -> None:
+        """Append each event, then apply it: fold, commit, observe, dispatch.
+
+        The stream's only writer. Events reaching here need not have been
+        emitted in this process — a procedure that ran in a pool hands its
+        events back and they are ingested on the main lane, byte for byte the
+        write path a locally-run procedure takes.
+
+        A unit of work may call this more than once, so it does NOT reset
+        :attr:`applied_positions` — the positions accumulate until
+        :meth:`take_applied` drains them, and a host driving the halves itself
+        must call that once per unit or a worker's skip-list will span two.
+
+        At-most-once per list, and NOT retryable as a whole: an element that
+        raises part-way leaves the prefix already in the log — appended first,
+        by design — so a host must fail the unit rather than ingest the same
+        list again. The un-appended tail stays on the engine's own queue, where
+        :meth:`discard_pending_events` can drop it.
+        """
+        # Incoming events join the engine's queue rather than a local one, so a
+        # failure mid-drain leaves the remainder somewhere the shell can still
+        # discard it, exactly as it did when this loop owned the emits.
+        self._events.extendleft(reversed(list(events)))
         while self._events:
             event = self._events.popleft()
             # The store is the truth: append FIRST, get the envelope.
@@ -266,6 +347,9 @@ class Engine:
             # it has already been folded here and must not be folded again
             # when the cursor reaches it. See Engine.take_applied.
             self.applied_positions.append(envelope.position)
+            # An element that emitted while handling this entry appended to the
+            # same queue, so it joins this drain and quiescence still means
+            # quiescence.
 
     def apply_event(
         self,
@@ -278,7 +362,7 @@ class Engine:
         """Fold one event, commit, observe, then run its policies.
 
         The ordering rule in one place, so the two things that consume an event
-        — :meth:`_drain_events`, for an entry this process just appended, and a
+        — :meth:`ingest`, for an entry this process just appended, and a
         group worker, for one it read back out of the log — cannot drift apart.
         It deliberately does NOT append: an entry reaching this method is
         already a fact, whoever wrote it.
@@ -318,7 +402,11 @@ class Engine:
             self.current_event = None
 
     def take_applied(self) -> tuple[int, ...]:
-        """The log positions the last :meth:`run_command` appended and applied.
+        """The log positions the unit of work just finished appended and applied.
+
+        Every :meth:`ingest` since the last reset, not merely the last one: a
+        unit that ingests several batches — the shape a pooled procedure gives
+        a host — must hand the worker ONE skip-list covering all of them.
 
         A hybrid group both runs commands here and tails the log, and those two
         intakes see the same entries: the fold happened inline, and the cursor

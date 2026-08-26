@@ -143,7 +143,7 @@ def test_the_group_runs_only_what_it_claims(engine, store):
 
 
 def test_the_read_model_commits_before_the_policy_runs(engine, store):
-    """``_drain_events``'s ordering rule, carried across the split verbatim —
+    """``ingest``'s ordering rule, carried across the split verbatim —
     this is what a policy-dispatched command is allowed to assume."""
     model = Model()
     engine.commit = model.commit
@@ -746,3 +746,38 @@ def test_two_groups_over_one_engine_advance_independently(engine, store):
 
     reacts.fold_to_tail()
     assert reacted == [f"r{i}" for i in range(5)]
+
+
+def test_a_hybrid_worker_that_ingests_twice_in_one_cycle_still_dispatches_once(engine, store):
+    """The pooled shape: a unit of work runs its procedures somewhere else and
+    ingests each batch as it comes back.
+
+    That is several ingests inside ONE cycle, and the trailing fold skips what
+    the cycle applied — so every batch's positions have to survive until the
+    worker asks for them. Losing the earlier ones re-folds and re-dispatches
+    that batch, which is the very thing the skip-list exists to prevent.
+    """
+    model, dispatched = Model(), []
+    engine.commit = model.commit
+    engine.register_procedure(
+        DefineRecipe, lambda c: engine.emit_event(RecipeDefined(recipe_id=c.recipe_id, servings=1))
+    )
+    engine.register_projection(RecipeDefined, model.fold, name="recipe")
+    engine.register_policy(RecipeDefined, lambda e: dispatched.append(e.recipe_id), name="announce")
+
+    def commands() -> bool:
+        for recipe_id in ("r1", "r2"):
+            engine.ingest(engine.run_procedure(DefineRecipe(recipe_id=recipe_id)))
+        return True
+
+    worker = GroupWorker(
+        "kitchen",
+        engine,
+        projections=engine.projection_runners(),
+        policies=engine.policy_runners(),
+        cursors=MemoryCursorStore(),
+        commands=commands,
+    )
+
+    assert worker.step() is True
+    assert dispatched == ["r1", "r2"]

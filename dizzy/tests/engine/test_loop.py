@@ -307,3 +307,104 @@ def test_the_trace_id_is_stamped_onto_bus_records_when_there_is_one(engine):
     engine.register_procedure(DefineRecipe, lambda c: None, name="define_recipe")
     engine.run_command(DefineRecipe(recipe_id="r1"))
     assert records[0]["trace_id"] == "deadbeef"
+
+
+# ── The two halves of run_command ───────────────────────────────────────────
+
+
+def test_run_procedure_returns_the_events_without_appending_them(engine):
+    """The half that may run in another process: a command in, events out, and
+    the log untouched — it keeps exactly one writer."""
+    engine.register_procedure(
+        DefineRecipe, lambda c: engine.emit_event(RecipeDefined(recipe_id=c.recipe_id))
+    )
+    events = engine.run_procedure(DefineRecipe(recipe_id="r1"))
+    assert [type(e).__name__ for e in events] == ["RecipeDefined"]
+    assert len(engine.store) == 0
+
+
+def test_run_procedure_hands_its_events_over_once(engine):
+    """Draining the queue is what makes the handoff safe: a second command
+    must not re-ingest the first one's events."""
+    engine.register_procedure(
+        DefineRecipe, lambda c: engine.emit_event(RecipeDefined(recipe_id=c.recipe_id))
+    )
+    engine.run_procedure(DefineRecipe(recipe_id="r1"))
+    assert engine.run_procedure(DefineRecipe(recipe_id="r2")) == [RecipeDefined(recipe_id="r2")]
+
+
+def test_ingest_folds_commits_and_dispatches_in_the_defined_order(engine):
+    """Events that never passed through this engine's procedures take the same
+    path as the ones that did."""
+    order = []
+    engine.commit = lambda: order.append("commit")
+    engine.register_projection(RecipeDefined, lambda e, at: order.append("fold"))
+    engine.register_policy(
+        RecipeDefined,
+        lambda e: (
+            order.append("policy"),
+            engine.dispatch_command(StartBatch(recipe_id=e.recipe_id)),
+        ),
+    )
+    engine.ingest([RecipeDefined(recipe_id="r1")])
+    assert order == ["fold", "commit", "policy"]
+    assert len(engine.store) == 1
+    assert [type(c).__name__ for c in engine.command_queue.items] == ["StartBatch"]
+
+
+def test_ingest_reports_the_positions_it_applied(engine):
+    engine.ingest([RecipeDefined(recipe_id="r1"), BatchOpened(recipe_id="r1")])
+    assert engine.take_applied() == (1, 2)
+
+
+def test_an_unregistered_command_is_refused_before_anything_runs(engine):
+    with pytest.raises(KeyError, match="DefineRecipe"):
+        engine.run_procedure(DefineRecipe(recipe_id="r1"))
+
+
+def test_positions_accumulate_across_every_ingest_in_one_unit(engine):
+    """A unit of work that ingests twice — the shape a host driving the halves
+    itself gets — must hand its worker ONE skip-list covering both batches.
+
+    A reset per ingest would drop the earlier batch, and the worker would then
+    re-fold and re-dispatch it when its cursor reached those rows.
+    """
+    engine.register_procedure(
+        DefineRecipe, lambda c: engine.emit_event(RecipeDefined(recipe_id=c.recipe_id))
+    )
+    first = engine.run_procedure(DefineRecipe(recipe_id="r1"))
+    second = engine.run_procedure(DefineRecipe(recipe_id="r2"))
+    engine.ingest(first)
+    engine.ingest(second)
+    assert engine.take_applied() == (1, 2)
+
+
+def test_a_later_procedure_does_not_wipe_positions_nobody_has_read(engine):
+    """`run_procedure` cannot append, so it has no business resetting a record of
+    what was appended — a hybrid worker reads that list after the command, and a
+    procedure run in between must leave it alone."""
+    engine.register_procedure(
+        DefineRecipe, lambda c: engine.emit_event(RecipeDefined(recipe_id=c.recipe_id))
+    )
+    engine.run_command(DefineRecipe(recipe_id="r1"))
+    engine.run_procedure(DefineRecipe(recipe_id="r2"))
+    assert engine.take_applied() == (1,)
+
+
+def test_a_failure_mid_ingest_leaves_the_tail_where_the_shell_can_drop_it(engine):
+    """Ingest appends first, so a raising projection leaves a prefix in the log —
+    but the events it never reached stay on the engine's own queue, which is what
+    `discard_pending_events` clears. A local queue would destroy them with the
+    stack frame and leave the shell nothing to discard.
+    """
+
+    def explode(event, at):
+        raise RuntimeError("projection failed")
+
+    engine.register_projection(RecipeDefined, explode)
+    with pytest.raises(RuntimeError):
+        engine.ingest([RecipeDefined(recipe_id="r1"), BatchOpened(recipe_id="r1")])
+    assert len(engine.store) == 1
+    assert [type(e).__name__ for e in engine._events] == ["BatchOpened"]
+    engine.discard_pending_events()
+    assert list(engine._events) == []
