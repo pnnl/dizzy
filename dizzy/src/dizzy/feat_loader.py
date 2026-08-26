@@ -60,6 +60,20 @@ def validate_feat(feat: FeatureDefinition) -> list[str]:
     """
     errors: list[str] = []
 
+    # Names are unique within a section, and nothing downstream can recover if they are
+    # not: every consumer keys on (kind, name) — the topology loader's placement maps, the
+    # generated package's symbols — so a repeat silently shadows one of the two elements.
+    # The dict-key YAML form makes it unrepresentable; the list form does not.
+    for section in _SECTIONS:
+        seen_names: set[str] = set()
+        for item in getattr(feat, section, None) or []:
+            if item.name in seen_names:
+                errors.append(
+                    f"{section}: '{item.name}' is declared more than once "
+                    "— names must be unique within a section"
+                )
+            seen_names.add(item.name)
+
     command_names = {c.name for c in feat.commands or []}
     event_names = {e.name for e in feat.events or []}
     query_names = {q.name for q in feat.queries or []}

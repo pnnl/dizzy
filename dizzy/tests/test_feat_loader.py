@@ -359,3 +359,29 @@ class TestValidateFeat:
         assert any(
             "adapter 'relative_filesystem' not declared on model 'recipes'" in e for e in errors
         )
+
+
+class TestDuplicateNames:
+    """A name repeated within one section shadows an element every consumer keys on."""
+
+    def test_duplicate_procedure_name(self):
+        feat = FeatureDefinition(
+            commands=[CommandDef(name="open", description="c")],
+            queries=[QueryDef(name="get_recipe", description="q")],
+            procedures=[
+                ProcedureDef(name="handle", command="open", queries=["get_recipe"]),
+                ProcedureDef(name="handle", command="open"),
+            ],
+        )
+        errors = validate_feat(feat)
+        assert any("procedures: 'handle' is declared more than once" in e for e in errors)
+
+    def test_same_name_in_two_sections_is_fine(self):
+        """Nothing enforces cross-kind uniqueness — (kind, name) is the identity."""
+        feat = FeatureDefinition(
+            commands=[CommandDef(name="open", description="c")],
+            events=[EventDef(name="opened", description="e")],
+            procedures=[ProcedureDef(name="ingest", command="open")],
+            policies=[PolicyDef(name="ingest", event="opened")],
+        )
+        assert validate_feat(feat) == []
