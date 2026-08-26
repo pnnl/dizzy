@@ -2401,3 +2401,269 @@ def test_metamorphic_validation_is_pure(seed: int) -> None:
         assert topology.model_dump(mode="json") == topology_before, (
             "validate_topology mutated the topology"
         )
+
+
+# --- the single-machine placement vocabulary: executor and priority ------------------------
+
+
+def test_load_executor_and_priority(tmp_path: Path) -> None:
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: paid
+                include:
+                  - kind: procedures
+                    names: ["*_completion"]
+                executor: pool
+                workers: 4
+              - name: default
+                catch_all: true
+            priority:
+              interactive: [send_notification, "approve_*"]
+            """,
+        )
+    )
+    assert topology.groups is not None
+    # use_enum_values: the loaded value is the string, which is what every consumer
+    # compares against and what the generator writes into the wiring.
+    assert topology.groups[0].executor == "pool"
+    assert topology.groups[1].executor is None
+    assert topology.priority is not None
+    assert topology.priority.interactive == ["send_notification", "approve_*"]
+
+
+def test_default_topology_states_neither_knob(tmp_path: Path) -> None:
+    """The absent-file default is one inline lane and every command batch. A topology
+    that says nothing about either must validate exactly as it did before they existed."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: default
+                catch_all: true
+            """,
+        )
+    )
+    assert topology.priority is None
+    assert topology.groups is not None
+    assert topology.groups[0].executor is None
+    assert validate_topology(topology, _one_procedure_feat()) == []
+
+
+def test_validate_pool_executor_with_projection_rejected(tmp_path: Path) -> None:
+    """`executor: pool` is a concurrency claim, so rule 1 refuses it for a fold.
+
+    The background lane runs while the main lane runs; a projection served there folds
+    out of log order exactly as a second worker would. The message is rule 1's own —
+    eligibility for the pool is not a second question, so it does not get a second
+    answer — and only the field it names changes.
+    """
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: folds
+                executor: pool
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert any(
+        "folds" in e and "recipe_catalog" in e and "executor is pool" in e for e in errors
+    ), errors
+    # The repair a pool group needs is not the one a worker count needs.
+    assert any("executor: inline" in e for e in errors), errors
+
+
+def test_validate_pool_executor_with_querying_procedure_rejected(tmp_path: Path) -> None:
+    """Rule 3 already decides pool eligibility: an element that reads a model may not
+    leave the lane that folds it, whatever took it off."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: paid
+                executor: pool
+                catch_all: true
+            """,
+        )
+    )
+    errors = validate_topology(topology, _reading_procedure_feat())
+    assert any(
+        "open_batch" in e and "'get_recipe'" in e and "aggregate key" in e for e in errors
+    ), errors
+
+
+def test_validate_pool_executor_with_query_free_procedures_is_clean(tmp_path: Path) -> None:
+    """The whole point: a paid model call reads nothing, so it comes off the lock."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: paid
+                executor: pool
+                workers: 4
+                catch_all: true
+            """,
+        )
+    )
+    assert validate_topology(topology, _one_procedure_feat()) == []
+
+
+def test_validate_pool_executor_reported_over_a_worker_count(tmp_path: Path) -> None:
+    """Both knobs are set and both are illegal here; the message names the executor,
+    because dropping to one pool worker would still not put the group back on the lane
+    that folds."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: folds
+                executor: pool
+                workers: 4
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert len(errors) == 1, errors
+    assert "executor is pool" in errors[0] and "workers is 4" not in errors[0]
+
+
+def test_validate_inline_executor_is_the_default_and_scales_by_workers(tmp_path: Path) -> None:
+    """Stating `executor: inline` must not change a verdict, or the default would be a
+    third thing rather than the absence of a choice."""
+    stated = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: work
+                executor: inline
+                workers: 4
+                catch_all: true
+            """,
+        )
+    )
+    errors = validate_topology(stated, _reading_procedure_feat())
+    assert any("workers is 4" in e and "open_batch" in e for e in errors), errors
+
+
+def test_validate_priority_naming_an_undeclared_command_rejected(tmp_path: Path) -> None:
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: default
+                catch_all: true
+            priority:
+              interactive: [ingest, ingset]
+            """,
+        )
+    )
+    errors = validate_topology(topology, _one_procedure_feat())
+    assert len(errors) == 1, errors
+    assert "'ingset'" in errors[0] and "priority.interactive" in errors[0]
+
+
+def test_validate_priority_naming_a_procedure_instead_of_its_command_rejected(
+    tmp_path: Path,
+) -> None:
+    """The name-space trap. `include` selectors name procedures; `priority` names the
+    commands they consume, and `_reading_procedure_feat` has procedure `open_batch`
+    handling command `open`, so guessing wrong is silently a no-op unless refused."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: default
+                catch_all: true
+            priority:
+              interactive: [open_batch]
+            """,
+        )
+    )
+    errors = validate_topology(topology, _reading_procedure_feat())
+    assert any("'open_batch'" in e and "not on the names of the procedures" in e for e in errors), (
+        errors
+    )
+
+
+def test_validate_priority_matching_nothing_at_all_rejected(tmp_path: Path) -> None:
+    """A glob is tolerated on its own — matching by property is what lets a topology
+    survive the feature-file gaining a command — but a whole section that prioritises
+    nothing is an author believing they made something interactive."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: default
+                catch_all: true
+            priority:
+              interactive: ["zz*"]
+            """,
+        )
+    )
+    errors = validate_topology(topology, _one_procedure_feat())
+    assert len(errors) == 1, errors
+    assert "matches no command" in errors[0] and "'zz*'" in errors[0]
+
+
+def test_validate_priority_glob_survives_beside_a_live_one(tmp_path: Path) -> None:
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: default
+                catch_all: true
+            priority:
+              interactive: ["ing*", "zz*"]
+            """,
+        )
+    )
+    assert validate_topology(topology, _one_procedure_feat()) == []
+
+
+def test_validate_priority_needs_no_procedure_to_be_placed_anywhere_special(
+    tmp_path: Path,
+) -> None:
+    """Priority and placement are orthogonal: an interactive command may perfectly well
+    be run by a procedure on a pool lane, and neither knob constrains the other."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: paid
+                executor: pool
+                catch_all: true
+            priority:
+              interactive: [ingest]
+            """,
+        )
+    )
+    assert validate_topology(topology, _one_procedure_feat()) == []

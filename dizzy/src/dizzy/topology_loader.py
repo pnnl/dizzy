@@ -145,6 +145,18 @@ def _resolve(topology: Topology, feat: FeatureDefinition) -> dict[tuple[str, str
     return claims
 
 
+def group_of(topology: Topology, feat: FeatureDefinition) -> dict[tuple[str, str], str]:
+    """Map each element to the single group that claims it, dropping anything else.
+
+    The public read of a *validated* topology, for a generator that has to turn
+    placement into emitted data. `validate_topology` has already refused an element
+    claimed twice or not at all, so the elements this drops are exactly the ones a
+    build should never have got this far with.
+    """
+    claims = _resolve(topology, feat)
+    return {element: c[0] for element, c in claims.items() if len(c) == 1}
+
+
 def load_topology(path: str | Path) -> Topology:
     """Load a ``topology.yaml`` file, validate it, and return a Topology."""
     raw = yaml.safe_load(Path(path).read_text())
@@ -321,6 +333,34 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                     f"— no element satisfies all of the fields it states{detail}"
                 )
 
+    # Priority is checked here, with the other reference checks, and against a
+    # DIFFERENT name-space: `include` selectors name procedures, `priority` names the
+    # commands they consume. Where a feature-file has procedure `open_batch` handling
+    # command `start_batch`, an author who guesses wrong gets a list that silently
+    # prioritises nothing, so the guess is refused by name.
+    interactive = list((topology.priority.interactive if topology.priority else None) or [])
+    commands = {p.command for p in feat.procedures or []}
+    for pattern in dict.fromkeys(interactive):
+        if any(c in pattern for c in _GLOB_CHARS):
+            # Tolerated for the same reason a dead selector glob is: matching by property
+            # is what lets a topology survive the feature-file gaining a command. The
+            # whole-list check below is what refuses a declaration that does nothing.
+            continue
+        if pattern not in commands:
+            errors.append(
+                f"topology priority.interactive names '{pattern}', which no procedure "
+                "declares as its command — priority keys on command names, not on the "
+                "names of the procedures that decide them"
+            )
+    if interactive and not any(
+        fnmatchcase(c, pattern) for c in commands for pattern in interactive
+    ):
+        rendered = _and_list([f"'{p}'" for p in dict.fromkeys(interactive)])
+        errors.append(
+            f"topology priority.interactive lists {rendered} and matches no command — "
+            "every command would be batch, which is what omitting the section says"
+        )
+
     if errors:
         logger.debug("validated topology", extra={"errors": len(errors)})
         return errors
@@ -370,28 +410,37 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
     # a policy for observing events out of order, which says nothing about the model it
     # reads, and the generated policy context carries a real `query:` handle. Keyed on the
     # (kind, name) PAIR because nothing makes names unique across kinds.
-    serial = "workers: 1 and max_in_flight: 1"
     reads: dict[tuple[str, str], list[str]] = {
         ("procedure", p.name): list(p.queries or []) for p in feat.procedures or []
     }
     reads.update({("policy", y.name): list(y.queries or []) for y in feat.policies or []})
     for group in groups:
         count, source = _effective_concurrency(group, topology.defaults)
-        if count <= 1:
+        # A background lane runs while the main lane runs, so `executor: pool` is a
+        # concurrency claim exactly as `workers: 4` is — one gate, one set of messages.
+        # It is reported in preference to a worker count because it is the stronger
+        # statement: dropping to one pool worker would not put the group back on the
+        # lane that folds. The eligibility question is already answered by rule 3, and a
+        # second, pool-specific message would be a second answer to it.
+        if group.executor == "pool":
+            shown, source, serial = "pool", "executor", "executor: inline"
+        elif count > 1:
+            shown, serial = str(count), "workers: 1 and max_in_flight: 1"
+        else:
             continue
         mine = members[group.name]
         projection = next((e for e in mine if e[0] == "projection"), None)
         reader = next((e for e in mine if reads.get(e)), None)
         if projection is not None:
             errors.append(
-                f"topology group '{group.name}': {source} is {count}, but the group claims "
+                f"topology group '{group.name}': {source} is {shown}, but the group claims "
                 f"projection '{projection[1]}' — a fold is only correct in log order, so a "
                 f"group containing a projection must run serially ({serial})"
             )
         elif reader is not None:
             queried = _and_list([f"'{q}'" for q in reads[reader]])
             errors.append(
-                f"topology group '{group.name}': {source} is {count}, but the group claims "
+                f"topology group '{group.name}': {source} is {shown}, but the group claims "
                 f"{_label(*reader)}, which queries {queried} — it decides on a model a "
                 "concurrent peer may be changing underneath it, and the feature-file "
                 "declares no aggregate key to serialise it by, so it must run serially "
@@ -399,7 +448,7 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
             )
         elif not mine:
             errors.append(
-                f"topology group '{group.name}': {source} is {count}, but the group claims no "
+                f"topology group '{group.name}': {source} is {shown}, but the group claims no "
                 "element — there is nothing here to scale"
             )
 

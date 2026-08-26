@@ -9,12 +9,16 @@ break a running feature are asserted by name.
 import ast
 
 import pytest
+from dizzy.feat_schema import FeatureDefinition
 from dizzy.generators.lib_python_uv import _dizzy_source_entry
 from dizzy.generators.wiring import (
     feat_name,
     render_wiring,
     render_wiring_pyproject_toml,
 )
+from dizzy.topology_loader import validate_topology
+from dizzy.topology_schema import Topology
+from linkml_runtime.utils.formatutils import camelcase
 from syrupy.assertion import SnapshotAssertion
 
 
@@ -172,3 +176,190 @@ def test_the_wiring_manifest_leaves_the_source_to_the_workspace_root(recipe_feat
     out = render_wiring_pyproject_toml(recipe_feat)
     assert '"dizzy",' in out
     assert "dizzy = {" not in out
+
+
+# ── Placement: topology.yaml, emitted as data ──────────────────────────────
+
+# The `isolation` topology from docs/explanation/topology.md, and a feature-file
+# shaped to it: two paid, query-free procedures for the pool lane, one operator
+# notification and one approval for the interactive level, and a projection plus a
+# policy on the group that holds the lock. Written out here rather than fixtured
+# because the assertions below pin its emitted table entry for entry — the point of
+# the test is that a reader can check the table against the YAML by eye.
+ISOLATION_FEAT = {
+    "description": "labthing-shaped isolation feature",
+    "procedures": [
+        {"name": "draft_completion", "command": "request_completion"},
+        {"name": "summarize_run", "command": "summarize_run"},
+        {"name": "notify_operator", "command": "send_notification"},
+        {"name": "approve_run", "command": "approve_run", "queries": ["get_run"]},
+    ],
+    "policies": [{"name": "notify_on_drafted", "event": "completion_drafted"}],
+    "projections": [
+        {"name": "run_log", "description": "d", "event": "completion_drafted", "model": "runs"}
+    ],
+    "models": [{"name": "runs"}],
+    "queries": [{"name": "get_run", "description": "d", "model": "runs"}],
+}
+
+ISOLATION_TOPOLOGY = {
+    "groups": [
+        {"name": "fast", "include": [{"kind": "projections"}, {"kind": "policies"}]},
+        {
+            "name": "paid",
+            "include": [{"kind": "procedures", "names": ["*_completion", "summarize_*"]}],
+            "executor": "pool",
+            "workers": 4,
+        },
+        {"name": "default", "catch_all": True},
+    ],
+    "priority": {"interactive": ["send_notification", "approve_*"]},
+}
+
+
+@pytest.fixture
+def isolation() -> tuple[FeatureDefinition, Topology]:
+    feat = FeatureDefinition.model_validate(ISOLATION_FEAT)
+    topology = Topology.model_validate(ISOLATION_TOPOLOGY)
+    # A table generated from an illegal topology would pin nothing worth pinning.
+    assert validate_topology(topology, feat) == []
+    return feat, topology
+
+
+def _placement_block(module: str) -> str:
+    """The emitted placement section, sliced out of the module."""
+    return module[module.index("COMMAND_PLACEMENT") : module.index("def build_engine(")]
+
+
+def test_no_topology_emits_no_placement_table(recipe_feat):
+    """The default topology is one inline lane and all-batch, which is what a queue
+    given no lane_of/priority_of already does — so a topology-free wiring must be the
+    module it was before topology existed, not that behaviour spelled out."""
+    out = render_wiring(recipe_feat, "recipe.feat.yaml")
+    assert "COMMAND_PLACEMENT" not in out
+    assert "LANES" not in out
+
+
+def test_the_isolation_topology_pins_an_exact_placement_table(isolation):
+    """Every entry, spelled out. Not a snapshot: the value of this table is that it
+    can be read against the YAML above, and a snapshot records whatever it is told."""
+    feat, topology = isolation
+    block = _placement_block(render_wiring(feat, "labthing.feat.yaml", topology))
+    assert (
+        "COMMAND_PLACEMENT: dict[str, tuple[str, str]] = {\n"
+        '    "ApproveRun": ("default", "interactive"),\n'
+        '    "RequestCompletion": ("paid", "batch"),\n'
+        '    "SendNotification": ("default", "interactive"),\n'
+        '    "SummarizeRun": ("paid", "batch"),\n'
+        "}\n"
+    ) in block
+    assert (
+        "LANES: dict[str, tuple[str, int]] = {\n"
+        '    "fast": ("inline", 1),\n'
+        '    "paid": ("pool", 4),\n'
+        '    "default": ("inline", 1),\n'
+        "}\n"
+    ) in block
+
+
+def test_the_placement_keys_are_what_the_module_calls_a_command_class(isolation):
+    """The table is looked up by ``type(command).__name__``, so its keys have to be
+    the names the wiring's own imports bind — a mismatch is a silent miss, never an
+    error, and every command would quietly land on the fallback lane."""
+    feat, topology = isolation
+    out = render_wiring(feat, "labthing.feat.yaml", topology)
+    imported = {
+        line.strip().rstrip(",")
+        for line in out[out.index("from gen_def.pydantic.commands import (") :]
+        .split(")")[0]
+        .splitlines()[1:]
+    }
+    for command in {p.command for p in feat.procedures}:
+        assert camelcase(command) in imported
+
+
+def test_placement_runs_and_answers_for_a_command_it_never_heard_of(isolation):
+    """The emitted helpers are executable data, not a template that only looks right."""
+    feat, topology = isolation
+    namespace: dict = {"Any": object}
+    exec(_placement_block(render_wiring(feat, "labthing.feat.yaml", topology)), namespace)
+
+    class SendNotification: ...
+
+    class SummarizeRun: ...
+
+    class Unknown: ...
+
+    assert namespace["command_lane"](SendNotification()) == "default"
+    assert namespace["command_priority"](SendNotification()) == 1
+    assert namespace["command_lane"](SummarizeRun()) == "paid"
+    assert namespace["command_priority"](SummarizeRun()) == 0
+    # The fallback is not the literal string "default" — a topology need not declare
+    # a group by that name — but the first lane served in the host process, so an
+    # unplaced command runs somewhere rather than waiting on a lane with no worker.
+    lane = namespace["command_lane"](Unknown())
+    assert namespace["command_priority"](Unknown()) == 0
+    assert namespace["LANES"][lane][0] == "inline"
+
+
+def test_every_placed_lane_is_a_declared_group(isolation):
+    """A command routed to a lane no worker serves never runs at all."""
+    feat, topology = isolation
+    namespace: dict = {"Any": object}
+    exec(_placement_block(render_wiring(feat, "labthing.feat.yaml", topology)), namespace)
+    lanes = set(namespace["LANES"])
+    assert lanes == {g.name for g in topology.groups}
+    assert {lane for lane, _ in namespace["COMMAND_PLACEMENT"].values()} <= lanes
+    assert namespace["DEFAULT_PLACEMENT"][0] in lanes
+
+
+def test_priority_is_a_property_of_the_command_type_not_of_its_procedure(isolation):
+    """`approve_*` is matched against `command:` values. Its procedure is
+    `approve_run` and its command is `approve_run` only by coincidence here, so the
+    one that must NOT be interactive is the procedure whose command is named
+    differently — `draft_completion` handles `request_completion`."""
+    feat, topology = isolation
+    namespace: dict = {"Any": object}
+    exec(_placement_block(render_wiring(feat, "labthing.feat.yaml", topology)), namespace)
+    assert namespace["COMMAND_PLACEMENT"]["RequestCompletion"][1] == "batch"
+    assert "DraftCompletion" not in namespace["COMMAND_PLACEMENT"]
+
+
+def test_an_all_pool_topology_falls_back_to_the_lane_it_actually_declares():
+    """A topology of nothing but pool lanes is legal — a group of query-free
+    procedures is exactly what `executor: pool` is for — so the fallback cannot
+    promise an inline lane. It names the first declared group, and the emitted
+    docstring says so rather than asserting a lane the topology never declared.
+    """
+    feat = FeatureDefinition.model_validate(
+        {
+            "description": "every procedure reads nothing",
+            "procedures": [
+                {"name": "draft_completion", "command": "request_completion"},
+                {"name": "summarize_run", "command": "summarize_run"},
+            ],
+        }
+    )
+    topology = Topology.model_validate(
+        {
+            "groups": [
+                {
+                    "name": "paid",
+                    "include": [{"kind": "procedures", "names": ["*_completion"]}],
+                    "executor": "pool",
+                    "workers": 4,
+                },
+                {"name": "spare", "catch_all": True, "executor": "pool"},
+            ]
+        }
+    )
+    assert validate_topology(topology, feat) == []
+    namespace: dict = {"Any": object}
+    exec(_placement_block(render_wiring(feat, "labthing.feat.yaml", topology)), namespace)
+
+    class Unknown: ...
+
+    lane = namespace["command_lane"](Unknown())
+    assert lane == "paid"
+    assert lane in namespace["LANES"]
+    assert namespace["LANES"][lane][0] == "pool"

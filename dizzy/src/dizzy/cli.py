@@ -409,6 +409,10 @@ def wiring(
             logger.error("%s", err)
         raise typer.Exit(code=1)
 
+    # None, not a default Topology: "no topology.yaml" and "a topology.yaml saying
+    # nothing" must not be the same input, because only the first may emit a wiring
+    # byte-identical to a build from before topology existed.
+    topology = None
     topology_path = output_dir / "topology.yaml"
     if topology_path.exists():
         try:
@@ -453,7 +457,7 @@ def wiring(
         )
         raise typer.Exit(code=1)
 
-    write_wiring_python_uv(feat, feat_file, output_dir)
+    write_wiring_python_uv(feat, feat_file, output_dir, topology)
     # Re-emit the manifest with the wiring package as a member. Listing it before
     # it exists would make the whole workspace unresolvable, so `libraries` leaves
     # it out and this stage adds it.

@@ -41,8 +41,8 @@ The design has to serve both of these, and they are not the same shape.
 | Must not lose | A 429-test suite that finishes in ~17s in-process | Any unit of work, ever |
 
 Both are expressible in the current draft, which is the main evidence the schema
-is not just labthing's problem in YAML. Both are shown here as first written, and
-rule 6 below costs each of them an edit — said there rather than quietly fixed
+is not just labthing's problem in YAML. Both are shown here as written against the
+schema as it stands, and rule 6 below costs each of them an edit — said there rather than quietly fixed
 here, because what the edit costs is the argument:
 
 ```yaml title="isolation"
@@ -51,10 +51,13 @@ groups:
     include: [{kind: projections}, {kind: policies}]
   - name: paid          # 40s turns block nothing else
     include: [{kind: procedures, names: ["*_completion", "summarize_*"]}]
+    executor: pool      # a background lane, off the lock entirely
     workers: 4
     retry: {max_attempts: 3, backoff: exponential, dead_letter: true}
   - name: default
     catch_all: true
+priority:               # command TYPES, not chains
+  interactive: [send_notification, "approve_*"]
 ```
 
 ```yaml title="fan-out"
@@ -76,6 +79,51 @@ and the `expand_*` tier both read nothing, so both scale as written. Concurrency
 both knobs: one worker holding 64 units in flight runs 64 units at once exactly as 64
 workers do, so the gate reads `max(workers, max_in_flight)` and names whichever field the
 author wrote.
+
+## Two latencies, two knobs
+
+`executor` and `priority` are the whole of the single-machine placement vocabulary,
+and they exist because "the command was slow to start" is two unrelated problems that
+each need their own fix:
+
+- **Queue position.** An urgent command sits behind two hundred batch commands.
+  `priority` fixes this: an interactive command is claimed before any batch command
+  waiting on the same lane.
+- **Head of line.** A forty-second procedure is *already running*, so the queue is not
+  consulted at all until it finishes. Priority cannot help — there is nothing to
+  reorder. Only `executor: pool` fixes this, by moving that procedure to a background
+  lane served by a spawned process pool, so the main lane keeps claiming.
+
+Neither knob solves the other's problem, which is why there are two of them rather
+than one number.
+
+**Priority has exactly two levels, `interactive` and `batch`, and batch is the
+default.** Not an integer: a numeric priority has no semantics anybody can state
+without running the scheduler, and every such field ends in teams bidding their own
+work up. Two levels have a one-sentence definition, and that sentence is testable.
+
+**Priority keys on command names, and does not travel along the causal chain.** It is
+a property of the command *type*. A policy reacting to an interactive command's event
+dispatches whatever the command type it names is declared to be — inheritance would
+make latency depend on the route a command arrived by, which is precisely the thing a
+topology exists to state rather than to discover under load. Note the name-space: the
+`include` selectors above match *procedure* names, `priority` matches the `command:`
+values those procedures consume, and in a feature-file where procedure `open_batch`
+handles command `start_batch` the difference is visible. Naming the wrong one is a
+generation error rather than a silent no-op.
+
+**Pool eligibility is not a new question.** A background lane runs while the main lane
+runs, so `executor: pool` is a concurrency claim exactly as `workers: 4` is, and it
+goes through the same gate: rule 1 refuses a pool group holding a projection, rule 3
+refuses one holding any element that declares `queries:`. What an element *reads* is
+what decides whether it may leave the lock, and there is deliberately no second answer.
+That cuts both ways on the recipes shape, where the two slowest procedures
+(`open_batch`, `run_batch`) are exactly the two that query — "slow" and "forkable" are
+not the same predicate, and the schema will not let you pretend they are.
+
+The default topology — no `topology.yaml` at all — is one inline group with every
+command batch, which is byte-identically the behaviour of a build from before any of
+this existed. `dizzy generate wiring` emits no placement table for it.
 
 Two schema decisions came directly out of writing those:
 
@@ -153,7 +201,7 @@ Co-membership is the only cure for that divergence that stays static, and it wor
 because inside one group there is one cursor and one lane — rules 1 and 3 already pin
 any group holding a projection or a reader to a single lane — and a group worker folds
 and commits before running the elements it claims at that position, which is the
-guarantee `Engine._drain_events` enforces today with four sequential statements and a
+guarantee `Engine.ingest` enforces today with four sequential statements and a
 group worker must inherit.
 
 The closure rule 6 induces does not chain, and that is structural rather than lucky: a
@@ -220,17 +268,22 @@ read cursor  →  fetch log entries after it  →  fold this group's projections
 commit  →  run this group's policies  →  advance cursor
 ```
 
-That is `Engine._drain_events`'s body with the append taken out of it, in the
+That is `Engine.ingest`'s body with the append taken out of it, in the
 same order, so the four sequential statements survive the split verbatim.
 
 **Command intake — a lane.** A group claiming procedures holds one lane of the
 durable command queue, named after the group. No cursor is involved: a command
 is not in the log, so there is no position to hold. A policy's dispatch is
-to be routed to the lane of the group claiming that command's procedure, from a
-table the generator will compute out of the topology — so nothing in `engine/`
-learns a command name. That table does not exist yet: today `dizzy generate
-wiring` has no notion of groups, and a topology is validated rather than
-executed.
+routed to the lane of the group claiming that command's procedure, from a table the
+generator computes out of the topology — so nothing in `engine/` learns a command
+name. That table is `COMMAND_PLACEMENT` in the generated wiring: a mapping from
+`type(command).__name__` to `(lane, priority)`, beside a `LANES` mapping giving each
+lane its executor and worker count. It is generated **data**, never a hand-written
+callable, because a callable is a second place the deployment is described and it
+drifts from `topology.yaml` in silence.
+
+What consumes it does not exist yet: the placement table is emitted and the executor
+that would serve two lanes from it is still to be built.
 
 **Most groups are both**, because rule 6 fuses readers with the folds they read
 and readers are mostly procedures. A hybrid worker's cycle is **fold to tail →
@@ -249,7 +302,7 @@ fold is for `run_command`'s own post-condition —
 that projections have folded by the time it returns — which every host that runs
 a command and then renders depends on.
 
-The guarantee that survives the split is not quite the one `_drain_events`
+The guarantee that survives the split is not quite the one `ingest`
 states. It is: **the read model commits before the dispatched command runs.**
 Inside one group those are the same sentence; across groups only the second is
 available, and it is the half anything downstream actually needed. What is given

@@ -15,6 +15,7 @@ engine then owns the ordering rule (projections fold and the read model commits
 before policies dispatch) rather than each handler restating it.
 """
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from linkml_runtime.utils.formatutils import camelcase
@@ -27,6 +28,8 @@ from dizzy.feat_schema import (
     QueryDef,
 )
 from dizzy.logger import logger
+from dizzy.topology_loader import group_of
+from dizzy.topology_schema import Topology
 
 WIRING_PACKAGE = "wiring"
 """Workspace member name, and the importable module (``from wiring import ...``)."""
@@ -398,6 +401,118 @@ def _render_projection_runners(feat: FeatureDefinition) -> list[str]:
     return lines
 
 
+def _render_placement(feat: FeatureDefinition, topology: Topology | None) -> list[str]:
+    """Command class name -> ``(lane, priority)``, read out of topology.yaml at build time.
+
+    Placement is generated DATA and never a hand-written callable. A callable is a
+    second place the deployment is described, and it drifts from the topology
+    silently — the defect ``mp``'s hand-written ``routes()`` already demonstrates.
+
+    Keyed on the command CLASS name because that is exactly ``type(command).__name__``:
+    a shell reduces an instance to a key without importing a command class or
+    consulting the graph, which is what keeps every command name out of
+    ``dizzy/engine``. The lane is the claiming group's name — the executor decides
+    how to serve each lane from ``LANES``, and a group's ``executor``/``workers`` are
+    all it needs for that.
+
+    Emitted ahead of its consumer, deliberately: nothing reads this table yet — the
+    executor that serves two lanes from ``LANES`` is not built — so it is data a host
+    may read and not yet a description of how anything runs.
+
+    Keyed on the command rather than on the procedure, which is ambiguous exactly where
+    the ENGINE is: two procedures declaring one ``command:`` leave ``Engine._procedures``
+    one entry, so only one of them ever runs. This table keeps the first, and the pair
+    belongs refused by the feature-file's own validation rather than decided here.
+
+    A topology of ``None`` emits nothing at all: the default topology is one inline
+    lane with every command batch, and a queue given no ``lane_of``/``priority_of``
+    already behaves that way. Emitting a table that says so would be the same
+    behaviour spelled out at the cost of making every topology-free wiring differ
+    from the one shipped before topology existed.
+    """
+    if topology is None or not (topology.groups or []):
+        return []
+
+    claims = group_of(topology, feat)
+    interactive = list((topology.priority.interactive if topology.priority else None) or [])
+
+    # The command's own lane is its procedure's: a command is not in the log, so the
+    # only thing that gives it a home is who runs it. A procedure `group_of` dropped
+    # is one a validated topology cannot contain, and it is skipped rather than
+    # guessed at.
+    placements: dict[str, tuple[str, str]] = {}
+    for proc in feat.procedures or []:
+        lane = claims.get(("procedure", proc.name))
+        if lane is None:
+            continue
+        priority = (
+            "interactive"
+            if any(fnmatchcase(proc.command, pattern) for pattern in interactive)
+            else "batch"
+        )
+        placements.setdefault(camelcase(proc.command), (lane, priority))
+
+    # An unplaced command must land somewhere a worker actually serves, so the fallback
+    # is a declared group rather than the string "default", which a topology need not
+    # have named. An inline lane is preferred because it is the one served in the host
+    # process; a topology that declares only pools has no such lane, and naming its first
+    # group is the honest answer rather than a lane nothing declares.
+    groups = topology.groups or []
+    fallback = next((g.name for g in groups if g.executor != "pool"), groups[0].name)
+
+    lines = [
+        "COMMAND_PLACEMENT: dict[str, tuple[str, str]] = {",
+    ]
+    lines += [
+        f'    "{name}": ("{lane}", "{priority}"),'
+        for name, (lane, priority) in sorted(placements.items())
+    ]
+    lines += [
+        "}",
+        '"""``type(command).__name__`` -> (lane, priority), straight out of topology.yaml.',
+        "",
+        "The lane is the name of the consumer group whose procedure runs the command;",
+        "the priority is one of the two levels a topology may declare. For a shell to",
+        "read, never an element — and no shell reads it yet: the executor that serves",
+        'two lanes from LANES is not built."""',
+        "",
+        f'DEFAULT_PLACEMENT: tuple[str, str] = ("{fallback}", "batch")',
+        '"""Where a command this table does not name goes: the first declared lane that is',
+        "not a pool, or simply the first declared lane where a topology declares only",
+        'pools."""',
+        "",
+        "LANES: dict[str, tuple[str, int]] = {",
+    ]
+    lines += [f'    "{g.name}": ("{g.executor or "inline"}", {g.workers or 1}),' for g in groups]
+    lines += [
+        "}",
+        '"""Lane name -> (executor, workers). `inline` lanes are served in the host',
+        "process and are the only ones that append to the log; a `pool` lane is served",
+        'by a spawned process pool that many workers wide."""',
+        "",
+        "",
+        "def placement_of(command: Any) -> tuple[str, str]:",
+        '    """The (lane, priority) this topology puts *command* on."""',
+        "    return COMMAND_PLACEMENT.get(type(command).__name__, DEFAULT_PLACEMENT)",
+        "",
+        "",
+        "def command_lane(command: Any) -> str:",
+        '    """``lane_of`` for a shell\'s command queue."""',
+        "    return placement_of(command)[0]",
+        "",
+        "",
+        "def command_priority(command: Any) -> int:",
+        '    """``priority_of`` for a shell\'s command queue: 1 interactive, 0 batch.',
+        "",
+        "    The integers are the queue's own ``PRIORITY_INTERACTIVE``/``PRIORITY_BATCH``,",
+        "    written out rather than imported so this module stays independent of which",
+        '    shell reads it."""',
+        '    return 1 if placement_of(command)[1] == "interactive" else 0',
+        "",
+    ]
+    return lines
+
+
 def _render_build_engine(feat: FeatureDefinition) -> list[str]:
     procedures = feat.procedures or []
     policies = feat.policies or []
@@ -530,7 +645,11 @@ def feat_name(feat_file_name: str) -> str:
     return feat_file_name.split(".")[0]
 
 
-def render_wiring(feat: FeatureDefinition, feat_file: str = "feature.feat.yaml") -> str:
+def render_wiring(
+    feat: FeatureDefinition,
+    feat_file: str = "feature.feat.yaml",
+    topology: Topology | None = None,
+) -> str:
     """Render lib/<runtime>/wiring/src/wiring.py for *feat*."""
     example = next(
         (e.name for e in list(feat.procedures or []) + list(feat.projections or [])),
@@ -545,10 +664,13 @@ def render_wiring(feat: FeatureDefinition, feat_file: str = "feature.feat.yaml")
         "\n".join(_render_resources(feat)),
         "\n".join(_render_queries(feat)),
         "\n".join(_render_projection_runners(feat)),
+        "\n".join(_render_placement(feat, topology)),
         "\n".join(_render_build_engine(feat)),
         "\n".join(_render_host(feat_file)),
     ]
-    return "\n\n".join(block.rstrip() for block in blocks) + "\n"
+    # Empty blocks are dropped rather than joined: a topology-free build emits no
+    # placement table, and a blank block would still cost the module a blank line.
+    return "\n\n".join(b for b in (block.rstrip() for block in blocks) if b) + "\n"
 
 
 def render_wiring_pyproject_toml(feat: FeatureDefinition) -> str:
@@ -603,12 +725,17 @@ def render_wiring_pyproject_toml(feat: FeatureDefinition) -> str:
     )
 
 
-def write_wiring_python_uv(feat: FeatureDefinition, feat_file: Path, output_dir: Path) -> None:
+def write_wiring_python_uv(
+    feat: FeatureDefinition,
+    feat_file: Path,
+    output_dir: Path,
+    topology: Topology | None = None,
+) -> None:
     """Write lib/python-uv/wiring/ — always overwritten, like every generated interface."""
     base = output_dir / "lib" / "python-uv" / WIRING_PACKAGE
     (base / "src").mkdir(parents=True, exist_ok=True)
     (base / "pyproject.toml").write_text(render_wiring_pyproject_toml(feat))
-    (base / "src" / "wiring.py").write_text(render_wiring(feat, feat_file.name))
+    (base / "src" / "wiring.py").write_text(render_wiring(feat, feat_file.name, topology))
     # The feat travels with the package so a lifted-out lib/ can still read its
     # own topology; it is regenerated here, never edited in place.
     (base / "src" / feat_file.name).write_text(feat_file.read_text())

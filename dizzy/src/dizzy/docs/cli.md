@@ -164,6 +164,26 @@ feat does not declare, a group that cannot be proven safe to run concurrently. T
 is read only under that exact name; a topology accepted is logged, so a misspelled
 filename is visible rather than a silently unenforced placement.
 
+A topology also says how the single machine serves each group. `executor: inline`
+(the default) runs a group on the main lane, in the host process — the lane that
+writes the log; `executor: pool` runs it on a background lane served by a spawned
+process pool, so a slow procedure cannot hold the head of the main lane's queue. The
+pool asks nothing new about safety: a background lane is concurrent with the main one,
+so it goes through the same gate `workers:` does, and a group holding a projection or
+any element declaring `queries:` is refused it. Separately, a top-level `priority:`
+section names the command types that jump the queue — exactly two levels, `interactive`
+and `batch`, with everything unnamed batch, keyed on `command:` values rather than on
+the procedures that consume them, and never inherited along a causal chain.
+
+From a topology, `wiring` emits `COMMAND_PLACEMENT` — `type(command).__name__` →
+`(lane, priority)` — beside a `LANES` mapping giving each lane its executor and worker
+count. Placement is emitted as data rather than as a callable a host writes: a callable
+is a second description of the deployment, and it drifts from `topology.yaml` in
+silence. With no `topology.yaml` the wiring emits no placement at all, which is the same
+module a build from before topology support would have produced. Nothing reads the table
+yet — the executor that serves two lanes from `LANES` is not built — so it is emitted
+ahead of its consumer, and a host wanting it today must read it itself.
+
 **Wiring is a pure function of the feature-file and the topology, which is why it is
 generated.** The feat
 already declares, per element, exactly the argument list of its generated context: a
