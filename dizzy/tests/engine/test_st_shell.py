@@ -1,8 +1,9 @@
 """The single-process shell — the durable queue's contract and the telemetry ring.
 
 The queue's promise is that a command survives the SQLite round trip intact,
-that work in flight when a process dies comes back, and that lanes serialize
-independently. Its commands are duck-typed on the pydantic surface
+that work in flight when a process dies comes back, that lanes serialize
+independently, and that priority reorders a claim without losing a row.
+Its commands are duck-typed on the pydantic surface
 (``model_dump``/``model_dump_json``/``model_validate_json``), so these tests
 use a stand-in rather than generating a feature — what is under test is the
 queue, not a schema.
@@ -12,9 +13,16 @@ from __future__ import annotations
 
 import json
 import queue as queue_mod
+import sqlite3
 
 import pytest
-from dizzy.engine.st import DEFAULT_LABEL_FIELDS, DurableCommandQueue, TelemetryBus
+from dizzy.engine.st import (
+    DEFAULT_LABEL_FIELDS,
+    PRIORITY_BATCH,
+    PRIORITY_INTERACTIVE,
+    DurableCommandQueue,
+    TelemetryBus,
+)
 
 
 class Ingest:
@@ -138,6 +146,113 @@ def test_lanes_are_claimed_independently(make_queue):
     assert chat is not None and chat[1].original_name == "chat"
     assert default is not None and default[1].original_name == "clip.mp4"
     assert q.claim(timeout=0.05, lane="chat") is None
+
+
+# ── Priority ────────────────────────────────────────────────────────────────
+
+
+def interactive_if_chat(command) -> int:
+    return PRIORITY_INTERACTIVE if command.original_name == "chat" else PRIORITY_BATCH
+
+
+def test_everything_is_batch_until_a_host_says_otherwise(make_queue):
+    """The default has to be FIFO: a host that injects nothing must see the
+    exact claim order it saw before priority existed."""
+    q = make_queue()
+    ids = [q.put(Ingest(original_name=f"{i}.mp4")) for i in range(4)]
+    assert [row["priority"] for row in q.jobs()] == [PRIORITY_BATCH] * 4
+    assert [q.claim(timeout=1)[0] for _ in ids] == ids
+
+
+def test_an_interactive_command_is_claimed_ahead_of_queued_batch_work(make_queue):
+    """Queue-position latency, stated as a test: arriving last is not the same
+    as being served last."""
+    q = make_queue(priority_of=interactive_if_chat)
+    for i in range(20):
+        q.put(Ingest(original_name=f"{i}.mp4"))
+    urgent = q.put(Ingest(original_name="chat"))
+
+    claimed = q.claim(timeout=1)
+    assert claimed is not None and claimed[0] == urgent
+
+
+def test_batch_work_is_deferred_not_skipped(make_queue):
+    """The starvation bound that matters here: priority reorders a finite set,
+    it does not drop from it. Every batch job still gets claimed, in its
+    original relative order."""
+    q = make_queue(priority_of=interactive_if_chat)
+    batch = [q.put(Ingest(original_name=f"{i}.mp4")) for i in range(5)]
+    urgent = q.put(Ingest(original_name="chat"))
+
+    order = []
+    while True:
+        claimed = q.claim(timeout=0.05)
+        if claimed is None:
+            break
+        order.append(claimed[0])
+    assert order == [urgent, *batch]
+
+
+def test_priority_orders_within_a_lane_not_across_lanes(make_queue):
+    """Lanes stay independent: a high-priority job on another lane is invisible
+    to this claim, because the lane is who serves it, not what it costs."""
+    q = make_queue(
+        lane_of=lambda c: "chat" if c.original_name == "chat" else "default",
+        priority_of=interactive_if_chat,
+    )
+    first = q.put(Ingest(original_name="a.mp4"))
+    q.put(Ingest(original_name="chat"))
+    claimed = q.claim(timeout=1, lane="default")
+    assert claimed is not None and claimed[0] == first
+
+
+def test_subscribers_see_the_priority(make_queue):
+    """The SSE ledger renders it, so it has to be on the record."""
+    q = make_queue(priority_of=interactive_if_chat)
+    sub = q.subscribe()
+    q.put(Ingest(original_name="chat"))
+    assert sub.get_nowait()["priority"] == PRIORITY_INTERACTIVE
+
+
+def test_a_pre_priority_database_migrates_in_place(make_queue, tmp_path):
+    """An existing queue file on disk must open and keep working — the whole
+    reason the lane and trace_id columns were added the same way."""
+    path = tmp_path / "old.db"
+    legacy = sqlite3.connect(str(path))
+    legacy.executescript(
+        """
+        CREATE TABLE jobs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            command_type  TEXT NOT NULL,
+            payload_json  TEXT NOT NULL,
+            label         TEXT NOT NULL DEFAULT '',
+            origin        TEXT NOT NULL DEFAULT '',
+            lane          TEXT NOT NULL DEFAULT 'default',
+            status        TEXT NOT NULL DEFAULT 'queued',
+            attempts      INTEGER NOT NULL DEFAULT 0,
+            error         TEXT,
+            created_at    TEXT NOT NULL,
+            started_at    TEXT,
+            finished_at   TEXT,
+            duration_ms   INTEGER,
+            trace_id      TEXT
+        );
+        CREATE INDEX jobs_lane ON jobs (lane, status, id);
+        """
+    )
+    legacy.execute(
+        "INSERT INTO jobs (command_type, payload_json, created_at)"
+        " VALUES ('Ingest', ?, '2026-01-01T00:00:00+00:00')",
+        (Ingest(original_name="legacy.mp4").model_dump_json(),),
+    )
+    legacy.commit()
+    legacy.close()
+
+    q = make_queue("old.db", priority_of=interactive_if_chat)
+    assert q.jobs(limit=1)[0]["priority"] == PRIORITY_BATCH  # the pre-priority row
+    urgent = q.put(Ingest(original_name="chat"))
+    claimed = q.claim(timeout=1)
+    assert claimed is not None and claimed[0] == urgent
 
 
 # ── Labels are the host's vocabulary, not the shell's ──────────────────────

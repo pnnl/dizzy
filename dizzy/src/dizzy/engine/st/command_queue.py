@@ -17,6 +17,23 @@ LLM call.
 
 State transitions fan out to in-process subscribers (one queue.Queue each)
 which back the /api/command-queue/stream SSE endpoint.
+
+Rows carry a two-level PRIORITY (batch / interactive) that orders the CLAIM.
+It exists for queue-position latency: an interactive command enqueued behind
+two hundred batch ones is claimed next instead of last. It is not a fix for
+head-of-line latency — a command already running blocks the lane whatever its
+priority, and that is a lane problem, not an ordering one.
+
+**What reordering the claim does and does not reach.** Running a command
+sooner appends its facts sooner, so a prioritized run and a FIFO run of the
+same commands write the log in different ORDERS. What priority does not touch
+is the order of events WITHIN one command — the engine's event queue is a FIFO
+and stays one — nor the fold of the log once written, which is why the two runs
+still reach the same read models. That equality is what
+``test_priority_defers_batch_work_without_skipping_it`` pins; stream equality
+is not claimed and is not true. Commands are intent and may be served in any
+order the host finds useful; events are facts already recorded. Nothing here
+may leak into ``Engine._events``.
 """
 
 from __future__ import annotations
@@ -43,6 +60,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     label         TEXT NOT NULL DEFAULT '',
     origin        TEXT NOT NULL DEFAULT '',
     lane          TEXT NOT NULL DEFAULT 'default',
+    priority      INTEGER NOT NULL DEFAULT 0,      -- 0=batch, 1=interactive
     status        TEXT NOT NULL DEFAULT 'queued',  -- queued|running|done|error
     attempts      INTEGER NOT NULL DEFAULT 0,
     error         TEXT,
@@ -54,6 +72,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, id);
 """
+
+# The two levels. Batch is the floor so an un-injected host keeps FIFO order.
+PRIORITY_BATCH = 0
+PRIORITY_INTERACTIVE = 1
 
 # Which payload fields make a good human-readable label is APP knowledge —
 # these are field names off one app's command models. Injected via
@@ -91,12 +113,16 @@ class DurableCommandQueue:
         path: str | Path | None = None,
         lane_of: Any | None = None,
         label_fields: tuple[str, ...] | None = None,
+        priority_of: Any | None = None,
     ):
         # registry: command class name -> pydantic class, for rehydration.
         # lane_of: callable(command) -> lane name; default everything to 'default'.
         # label_fields: payload fields to surface as a job label, in order.
+        # priority_of: callable(command) -> 0|1; default everything to batch, so
+        #   a host that injects nothing gets the FIFO order it had before.
         self.registry = registry
         self.lane_of = lane_of or (lambda _c: "default")
+        self.priority_of = priority_of or (lambda _c: PRIORITY_BATCH)
         self.label_fields = (
             tuple(label_fields) if label_fields is not None else DEFAULT_LABEL_FIELDS
         )
@@ -112,7 +138,19 @@ class DurableCommandQueue:
             self._db.execute("ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'default'")
         if "trace_id" not in cols:  # pre-otel database: migrate in place
             self._db.execute("ALTER TABLE jobs ADD COLUMN trace_id TEXT")
-        self._db.execute("CREATE INDEX IF NOT EXISTS jobs_lane ON jobs (lane, status, id)")
+        if "priority" not in cols:  # pre-priority database: migrate in place
+            self._db.execute(
+                "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"
+            )  # every existing row becomes batch, preserving its claim order
+        # The claim order is (priority DESC, id), so the index carries priority.
+        # A new NAME rather than a redefinition of jobs_lane: CREATE INDEX IF NOT
+        # EXISTS would silently keep the old (lane,status,id) shape on a database
+        # that already has it, and the claim would fall back to a scan.
+        self._db.execute("DROP INDEX IF EXISTS jobs_lane")
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS jobs_lane_priority"
+            " ON jobs (lane, status, priority DESC, id)"
+        )
         self._db.commit()
         self._cond = threading.Condition()
         self._subscribers: list[queue.Queue] = []
@@ -128,13 +166,14 @@ class DurableCommandQueue:
             "label": _label_for(command, self.label_fields),
             "origin": origin,
             "lane": self.lane_of(command),
+            "priority": int(self.priority_of(command)),
             "created_at": _now(),
         }
         with self._cond:
             cur = self._db.execute(
                 "INSERT INTO jobs (command_type, payload_json, label, origin,"
-                " lane, status, created_at) VALUES (:command_type,"
-                " :payload_json, :label, :origin, :lane, 'queued',"
+                " lane, priority, status, created_at) VALUES (:command_type,"
+                " :payload_json, :label, :origin, :lane, :priority, 'queued',"
                 " :created_at)",
                 row,
             )
@@ -151,11 +190,29 @@ class DurableCommandQueue:
 
         Returns (job_id, command), or None on timeout. One worker per lane:
         the per-lane serialization is the chain's concurrency guard.
+
+        Claim order is (priority DESC, id): interactive first, FIFO within a
+        level. A level is exhausted before the next is looked at, so over a
+        CLOSED set of work — everything enqueued up front, as a script or a
+        cascade running to quiescence — batch work is deferred and never
+        skipped: the whole set still drains, and to the same quiescent state.
+
+        Under an OPEN workload the deferral is UNBOUNDED, and that is the
+        honest statement of the policy rather than a defect to be worked
+        around here. A host that produces interactive commands at least as fast
+        as it serves them keeps the interactive level non-empty, and batch rows
+        are then never claimed at all — not late, never. Bounding it means
+        ageing rows into the higher level, which makes the claim order a
+        function of wall clock rather than of queue state and costs ``st`` the
+        determinism that is its whole guarantee. A host that needs both owes
+        itself a second lane, which is serialized separately and is not
+        starved by this ordering.
         """
         with self._cond:
             while True:
                 row = self._db.execute(
-                    "SELECT * FROM jobs WHERE status='queued' AND lane=? ORDER BY id LIMIT 1",
+                    "SELECT * FROM jobs WHERE status='queued' AND lane=?"
+                    " ORDER BY priority DESC, id LIMIT 1",
                     (lane,),
                 ).fetchone()
                 if row is not None:
