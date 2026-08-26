@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from dizzy.feat_schema import FeatureDefinition
-from dizzy.topology_loader import load_topology, validate_topology
+from dizzy.topology_loader import _SINGULAR, load_topology, validate_topology
 from dizzy.topology_schema import Topology
 from pydantic import ValidationError
 
@@ -14,6 +14,56 @@ def _write(tmp_path: Path, content: str) -> Path:
     p = tmp_path / "topology.yaml"
     p.write_text(textwrap.dedent(content))
     return p
+
+
+# --- schema drift ---------------------------------------------------------------------
+
+# Every feature-file section that is NOT a placeable element, and why. The pairing with
+# _SINGULAR below is the point: a section is placeable or it is excluded here, and the
+# suite will not let a third option exist silently.
+_NOT_PLACEABLE = {
+    "description": "prose about the feature, not an element",
+    "commands": "a request. Procedures consume them; a command has no cursor of its own",
+    "events": "the log's contents, not a consumer of the log",
+    "models": "folded into, never placed — a model rides with its projections (rule 1)",
+    "queries": "a read over a model, so placement is a read-substrate question (rule 4)",
+    "environment": "values injected into an element, not an element",
+    "telemetry": "signals emitted by an element, not an element",
+}
+
+
+def test_every_feat_section_is_placed_or_deliberately_excluded() -> None:
+    """A section the validator has never heard of is INVISIBLE, not unclaimed.
+
+    `_universe` builds the placeable set from a hardcoded list of three sections. If the
+    feature-file gains a kind and that list is not updated, every instance of it falls
+    out of the universe — so the rule-5 "claimed by no group" check never runs on it and
+    the topology validates clean while an entire kind goes unplaced. That is the exact
+    failure `catch_all` exists to prevent, arriving by a route `catch_all` cannot see.
+
+    This is not hypothetical maintenance anxiety: `environment:` is slated for removal in
+    the capabilities work, so this field list is actively moving. Failing here is the
+    cheap outcome — someone reads the two sets and decides which side the new section is
+    on. The expensive outcome is silent misplacement in generated deployment wiring.
+    """
+    declared = set(FeatureDefinition.model_fields)
+    placeable = set(_SINGULAR)
+    accounted = placeable | set(_NOT_PLACEABLE)
+
+    unaccounted = declared - accounted
+    assert not unaccounted, (
+        f"feature-file section(s) {sorted(unaccounted)} are neither placed by "
+        f"topology_loader._SINGULAR nor listed in _NOT_PLACEABLE. Decide which: add the "
+        f"section to _SINGULAR (and _universe) if a topology should place it, or to "
+        f"_NOT_PLACEABLE with the reason it is not an element."
+    )
+    stale = accounted - declared
+    assert not stale, (
+        f"{sorted(stale)} is claimed here but the feature-file no longer declares it — "
+        f"drop it from _SINGULAR/_NOT_PLACEABLE so this test keeps meaning something."
+    )
+    # Disjoint, or a section could be quietly listed as both.
+    assert not (placeable & set(_NOT_PLACEABLE))
 
 
 # --- load ---------------------------------------------------------------------------
