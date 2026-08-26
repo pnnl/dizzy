@@ -41,7 +41,9 @@ The design has to serve both of these, and they are not the same shape.
 | Must not lose | A 429-test suite that finishes in ~17s in-process | Any unit of work, ever |
 
 Both are expressible in the current draft, which is the main evidence the schema
-is not just labthing's problem in YAML:
+is not just labthing's problem in YAML. Both are shown here as first written, and
+rule 6 below costs each of them an edit — said there rather than quietly fixed
+here, because what the edit costs is the argument:
 
 ```yaml title="isolation"
 groups:
@@ -94,9 +96,10 @@ selectors is still an error.
 `dizzy generate wiring` already turns the feature-file into per-element bindings.
 Topology makes it take a second input and emit one wiring **per group**.
 
-The four ordering rules are all statically checkable against the feature-file, so
+The six placement rules are all statically checkable against the feature-file, so
 they are generation errors, not runtime races. Make the bad state
-unrepresentable, not detectable:
+unrepresentable, not detectable. Rules 1-5 are enforced by `validate_topology`
+today; rule 6 is specified here and not yet implemented:
 
 1. **Projections for one model share a group, and that group runs serially.** A model
    is a fold in log order; scatter its projections and the fold interleaves — silently,
@@ -126,9 +129,74 @@ unrepresentable, not detectable:
    a pattern that sweeps up a query name reads as claiming the query, and is refused
    even when it matches elements too — and neither does an exact name that resolves to
    no element at all.
+5. **Every element is claimed by exactly one group.** Two claims and the element
+   belongs to nobody — neither group's worker can assume it ran, and the rule-1
+   fold order stops meaning anything. No claim and it never runs at all, which
+   is the failure a `catch_all` group exists to make impossible; at most one
+   group may be that group. This is the rule the shipped validator's messages
+   name, and it is checked before any of the others, because a doubly claimed
+   element would otherwise cascade a rule-1 error on top of the message naming
+   its real problem.
+6. **A reader shares a group with what it reads.** An element declaring `queries:`
+   decides *on* a model, and what the log records is the decision, never the model. A
+   reader whose group trails the group folding a model it reads does not merely see
+   stale data — it emits a *different event*, so two deployments' logs diverge in
+   content rather than converging late, and no refold repairs a log that is short an
+   entry. So the group claiming an element must also claim every projection folding
+   every model that element's queries read. Discriminated exactly as rule 3
+   discriminates, and the two are the same fact on two axes: rule 3 says a reader
+   forbids concurrency *within* its group, this one says it forbids *distance* from
+   the model it reads. An element that reads nothing is untouched by both, which is
+   why the paid `*_completion` tier and the 32-wide `expand_*` tier survive unchanged.
+
+Co-membership is the only cure for that divergence that stays static, and it works
+because inside one group there is one cursor and one lane — rules 1 and 3 already pin
+any group holding a projection or a reader to a single lane — and a group worker folds
+and commits before running the elements it claims at that position, which is the
+guarantee `Engine._drain_events` enforces today with four sequential statements and a
+group worker must inherit.
+
+The closure rule 6 induces does not chain, and that is structural rather than lucky: a
+projection declares no `queries:`, so no reader is reachable from another reader through
+a model. The constraint graph is bipartite — readers on one side, model cohorts on the
+other — and two cohorts merge only where one element's own `queries:` list spans both.
+The rule is also deliberately silent about *writes*. An element's emissions go to the
+log, which is the truth and is ordered; a projection folding them late is latency, not
+divergence. Pinning emitters to the folds of what they emit is what would make the
+closure transitive: on `examples/recipes` it unions all four models and drags every
+`record_*` procedure in via its own catalog fold, collapsing all 20 elements into one
+group. The silence about writes is load-bearing, not an omission. Queries stay exempt
+(rule 4) for the same reason the rule stops at reads: a stale read served to a person is
+latency, a stale read served to a *decision* is divergence, and only the second is the
+log's problem.
+
+What rule 6 costs is not throughput — the set it constrains is exactly the set rule 3
+had already pinned to one lane — but the freedom to put a decision anywhere other than
+with the folds it reads, and on a read-heavy feature that is a real cost paid by the
+groups least able to afford it. On `examples/recipes` the readers are `open_batch`
+{catalog, inventory}, `run_batch` {batches, catalog, inventory} and
+`advance_ready_batches` {batches}, which fuses 10 projections and all 3 readers into one
+13-element group. That leaves seven elements in six further placements — the five
+`record_*` procedures are free, but `generation_graph` and `derivation_graph` both fold
+`provenance` and so are one unit by rule 1 — for a maximum of seven groups, not one.
+Thin, and a property of recipes (a chained workflow where nearly every decision reads
+shared state) rather than of the rule.
+
+**Both worked topologies above pay for it, and the isolation one is illegal as
+written.** `fast` claims *every* projection, so every querying procedure the `default`
+catch-all sweeps up — `open_batch` and `run_batch` in the recipes shape — now breaks
+rule 6, and the only legal repair is to move them onto `fast`: the group whose stated
+job is to hold the lock and stay quick. What survives is the thing that topology was
+bought for, because the `paid` tier reads nothing and still comes off the lock; what
+rule 6 takes away is splitting *read-decisions* off it. The fan-out topology pays the
+same way and not, as an earlier draft of this section said, by narrowing one selector:
+`{model: artifact_ledger}` now determines where every reader of `artifact_ledger` lives,
+wherever the catch-all would otherwise have put it, so the ledger group and its readers
+must be co-declared. That a `{model: X}` selector reaches beyond X's projections is the
+part of rule 6 most likely to surprise an author.
 
 Failure names the element and the rule it broke. Three smaller conditions are
-generation errors for the same reason the four rules are — a deployment that cannot
+generation errors for the same reason the six rules are — a deployment that cannot
 be what it says it is should not be representable:
 
 - A group that can claim nothing — no `include` selectors and no `catch_all` — is a
@@ -162,6 +230,26 @@ rather than `replay(all)`, because a log only grows. But losing one must be
 guard, so replaying from zero re-dispatches everything and every one no-ops. That
 property is what keeps a cursor a performance checkpoint instead of a second
 source of truth, and it needs a test, not a paragraph.
+
+What a cursor may *not* be is a position in canonical order. `DagStore.iterate` is
+Kahn over the whole event set tiebroken by content-hash id, so the order is a pure
+function of that set and a replicated event carrying old parents splices into the
+*middle* of it: measured, one peer fact forked off an early entry renumbered 196 of
+200 existing positions. `Envelope.seq` is the per-call enumeration index, nothing
+stores it, and `add_replicated` never even sets it. A cursor is therefore either a
+**frontier** — a set of event ids whose causal past has been folded, resumed by the
+walk-back-until-known idiom `dagstore/sync.py` and `replicate.pull` already
+implement — or a **local insertion watermark**, which is prefix-stable, always a
+valid causal order, and the only one of the two that seeks (0.5ms against 200k
+events, versus 0.5s to rebuild canonical order before it can yield anything). The
+watermark is node-local and must never be compared between peers; the frontier is
+the portable one. Two store defects block a tailing cursor and are named here so
+they are not discovered later: `DagStore` is the one durable component in the engine
+that does not set `journal_mode=WAL`, and `iterate`'s two Kahn setup statements are
+separately autocommitted, so a foreign commit landing between them misclassifies a
+child as a root and emits it before its parent — reproduced unforced in ~0.85% of
+concurrent passes. Nothing tails the log today, which is the only reason that is
+latent.
 
 ## The open question: what is a command's durable home?
 
@@ -199,12 +287,15 @@ Three things fall out that are not yet designed:
   work). This wants to be a declared property of the policy in the *feature-file*
   — `backfill: none | from-genesis | from-heads` — decided when the policy is
   authored, not when it is deployed.
-- **Aggregate keys.** Rule 3 currently splits elements on `queries:` — a sound
+- **Aggregate keys.** Rules 3 and 6 both split elements on `queries:` — a sound
   discriminator, but a blunt one. A procedure reading a model it never writes is
   safe to parallelise and is refused anyway; two reading disjoint aggregates likewise.
   An aggregate key in the feature-file is what would let the validator say yes to
   those, and it is the difference between "reads nothing" and "reads nothing *this
-  worker is racing*".
+  worker is racing*". It loosens both rules identically — two readers over disjoint keys
+  need not share a group with each other, and a reader may sit apart from a fold it
+  provably never races — so rule 6 should be written as a predicate an aggregate key
+  later *narrows*, not one it replaces.
 
 ## Does this subsume `st` and `mp`?
 
@@ -228,6 +319,18 @@ test whose whole job is to stop `mp` being quietly promoted. The topology claim 
 stronger than what `mp` promises. If it holds, this is not `mp` with a config
 file; it is `st`'s observable guarantee at `mp`'s scale, bought by constraining
 placement instead of trusting a broker.
+
+Rule 6 strengthens that claim without establishing it. It removes the failure mode
+that makes two logs differ in *content* — a decision reached against a stale model —
+which is the half no refold can repair. The residual gap is not about reads at all:
+`DagStore.append` names *the current local heads* as parents, so two groups appending
+concurrently mint different parent tuples, hence different content-hash ids, hence a
+different DAG. Since `iterate` is a deterministic function of the event set, the
+claim's second half — given the same DAG, every topology folds byte-identical models
+— is already true and is the convergence invariant. The unfinished half is the first:
+parents must become a function of the entry the element consumed rather than of
+whatever the frontier happened to be at append time. That is a change to `append`,
+and it is the companion work to rule 6 rather than something rule 6 assumes away.
 
 That claim is a property test, not an example: random valid topologies, random
 interleavings, replay, compare. It is the first thing to write, because if it
