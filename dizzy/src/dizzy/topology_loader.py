@@ -48,7 +48,14 @@ def _universe(feat: FeatureDefinition) -> list[tuple[str, str]]:
         "policies": feat.policies or [],
         "projections": feat.projections or [],
     }
-    return [(singular, e.name) for plural, singular in _SINGULAR.items() for e in sections[plural]]
+    universe = [
+        (singular, e.name) for plural, singular in _SINGULAR.items() for e in sections[plural]
+    ]
+    # Every map below is keyed on this pair, so a repeat would collapse two elements into
+    # one and hide, say, a reading procedure behind a query-free namesake. `validate_feat`
+    # refuses the duplicate; assert it here, where the collapse would actually happen.
+    assert len(set(universe)) == len(universe), "feat declares one kind's name twice"
+    return universe
 
 
 def _models(feat: FeatureDefinition) -> dict[tuple[str, str], str | None]:
@@ -71,7 +78,11 @@ def _matches(selector: Selector, kind: str, name: str, model: str | None) -> boo
         return False
     # fnmatchcase, never fnmatch: the latter runs os.path.normcase, so the same topology
     # would validate differently on a case-insensitive filesystem.
-    if selector.names and not any(fnmatchcase(name, p) for p in selector.names):
+    # `is not None`, not truthiness: an empty `names: []` states a name constraint that
+    # nothing satisfies, so the selector claims nothing and Phase B says so. Reading it as
+    # "unstated" would silently widen it to whatever its other fields allow — a file that
+    # enumerates no name placing a whole kind.
+    if selector.names is not None and not any(fnmatchcase(name, p) for p in selector.names):
         return False
     return True
 
@@ -181,7 +192,7 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 "is not set — the group claims nothing"
             )
         for i, selector in enumerate(group.include or [], start=1):
-            if selector.kind is None and not selector.names and selector.model is None:
+            if selector.kind is None and selector.names is None and selector.model is None:
                 errors.append(
                     f"topology group '{group.name}': selector #{i} states none of 'kind', "
                     "'names' or 'model' — set 'catch_all: true' if the group should claim "
@@ -244,11 +255,9 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 if selector.kind is None and selector.model is None:
                     # The only reachable shape of rule 4: a selector stating a kind or a
                     # model provably cannot claim a query, so flagging it would be false.
-                    # An exact name that also names a placeable element is not a query
-                    # reference — nothing enforces cross-kind name uniqueness, and the
-                    # selector unambiguously claims the element — but a glob sweeping a
-                    # query name is reported even when it also matches elements, because
-                    # the pattern reads as though it covers the query too.
+                    # The literal/glob split is rule 4's own second sentence: an exact name
+                    # that also names a placeable element claims that element, a glob that
+                    # sweeps a query name is refused even when it matches elements too.
                     hits = [q for q in query_names if fnmatchcase(q, pattern)]
                     if hits and (is_glob or not any_kind):
                         for query in hits:
@@ -351,22 +360,28 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 "consumer groups — one model's projections must share a group (rule 1)"
             )
 
-    # Rules 2 and 3. Policies partition freely — they observe an event and dispatch a
-    # command, so out-of-order observation is harmless. Procedures partition when they
-    # read nothing: a procedure declaring no queries computes its events from the command
-    # alone, so no concurrent decision can reach it. A procedure that DOES query is a
-    # read-modify-write over a model another procedure may be changing underneath it, and
-    # the feature-file declares no aggregate key to serialise it by — so that one, and
-    # only that one, is what forces a group serial.
+    # Rules 2 and 3. An element partitions when it reads nothing: declaring no queries, it
+    # computes its output from the command or event alone, so no concurrent decision can
+    # reach it. One that DOES query is a read-modify-write over a model a peer may be
+    # changing underneath it, and the feature-file declares no aggregate key to serialise
+    # it by — so that one, and only that one, is what forces a group serial.
+    #
+    # Keyed on the `queries:` list and never on the kind that declares it: rule 2 exonerates
+    # a policy for observing events out of order, which says nothing about the model it
+    # reads, and the generated policy context carries a real `query:` handle. Keyed on the
+    # (kind, name) PAIR because nothing makes names unique across kinds.
     serial = "workers: 1 and max_in_flight: 1"
-    reads = {p.name: list(p.queries or []) for p in feat.procedures or []}
+    reads: dict[tuple[str, str], list[str]] = {
+        ("procedure", p.name): list(p.queries or []) for p in feat.procedures or []
+    }
+    reads.update({("policy", y.name): list(y.queries or []) for y in feat.policies or []})
     for group in groups:
         count, source = _effective_concurrency(group, topology.defaults)
         if count <= 1:
             continue
         mine = members[group.name]
         projection = next((e for e in mine if e[0] == "projection"), None)
-        reader = next((e for e in mine if e[0] == "procedure" and reads[e[1]]), None)
+        reader = next((e for e in mine if reads.get(e)), None)
         if projection is not None:
             errors.append(
                 f"topology group '{group.name}': {source} is {count}, but the group claims "
@@ -374,11 +389,11 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 f"group containing a projection must run serially ({serial})"
             )
         elif reader is not None:
-            queried = _and_list([f"'{q}'" for q in reads[reader[1]]])
+            queried = _and_list([f"'{q}'" for q in reads[reader]])
             errors.append(
                 f"topology group '{group.name}': {source} is {count}, but the group claims "
-                f"procedure '{reader[1]}', which queries {queried} — it decides on a model a "
-                "concurrent procedure may be changing underneath it, and the feature-file "
+                f"{_label(*reader)}, which queries {queried} — it decides on a model a "
+                "concurrent peer may be changing underneath it, and the feature-file "
                 "declares no aggregate key to serialise it by, so it must run serially "
                 f"({serial})"
             )

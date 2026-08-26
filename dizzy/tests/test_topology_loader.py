@@ -1144,6 +1144,94 @@ def test_validate_policies_only_group_may_scale(tmp_path: Path) -> None:
     assert validate_topology(topology, feat) == []
 
 
+def test_validate_workers_with_querying_policy_rejected(tmp_path: Path) -> None:
+    """Rule 3 keys on `queries:`, not on the kind that declares it.
+
+    Rule 2 exonerates policies for observing events out of order, and says nothing about
+    the model one reads: a policy declaring `queries:` decides on state a peer may be
+    changing, exactly as a procedure does, and the generated policy context carries a real
+    `query:` handle to do it with. The shipped recipes example has such a policy.
+    """
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: reactions
+                workers: 32
+                include:
+                  - kind: policies
+              - name: rest
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "find_blocked", "description": "d", "model": "catalog"}],
+        procedures=[{"name": "ingest_recipe", "command": "ingest"}],
+        policies=[
+            {"name": "advance_ready", "event": "recipe_ingested", "queries": ["find_blocked"]},
+            {"name": "notify_owner", "event": "recipe_ingested"},
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert len(errors) == 1
+    # Named as a policy, and never the query-free peer that is not the problem.
+    assert "policy 'advance_ready'" in errors[0] and "notify_owner" not in errors[0]
+    assert "'find_blocked'" in errors[0] and "aggregate key" in errors[0]
+
+
+def test_validate_max_in_flight_with_querying_policy_rejected(tmp_path: Path) -> None:
+    """The other knob reaches a reading policy too — one worker, 64 decisions at once."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: reactions
+                max_in_flight: 64
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "find_blocked", "description": "d", "model": "catalog"}],
+        policies=[
+            {"name": "advance_ready", "event": "recipe_ingested", "queries": ["find_blocked"]}
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert any("advance_ready" in e and "max_in_flight" in e for e in errors)
+
+
+def test_validate_query_free_policy_group_still_scales(tmp_path: Path) -> None:
+    """Rule 2 survives the change: a policy that reads nothing partitions as before, and a
+    reading procedure of the same name elsewhere must not be mistaken for it."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: reactions
+                workers: 8
+                include:
+                  - kind: policies
+              - name: rest
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        procedures=[{"name": "audit", "command": "ingest", "queries": ["get_recipe"]}],
+        policies=[{"name": "audit", "event": "recipe_ingested"}],
+    )
+    assert validate_topology(topology, feat) == []
+
+
 def test_validate_workers_inherited_from_defaults(tmp_path: Path) -> None:
     topology = load_topology(
         _write(

@@ -68,7 +68,8 @@ groups:
 ```
 
 Both examples scale a group of procedures, and `dizzy generate wiring` accepts that as
-long as none of those procedures declares a `queries:` — see rule 3. The paid completions
+long as none of those procedures declares a `queries:` — see rule 3, which asks that same
+question of every element a scaled group holds, policies included. The paid completions
 and the `expand_*` tier both read nothing, so both scale as written. Concurrency means
 both knobs: one worker holding 64 units in flight runs 64 units at once exactly as 64
 workers do, so the gate reads `max(workers, max_in_flight)` and names whichever field the
@@ -97,23 +98,46 @@ The four ordering rules are all statically checkable against the feature-file, s
 they are generation errors, not runtime races. Make the bad state
 unrepresentable, not detectable:
 
-1. **Projections for one model share a group.** A model is a fold in log order;
-   scatter its projections and the fold interleaves — silently, and only under
-   load. This is the rule a plausible-looking config is most likely to break.
-2. **Policies partition freely.** They react and dispatch; commands dedupe on
-   deterministic ids, so observing events in another group's order is harmless.
-3. **Procedures partition when they read nothing.** A procedure declaring no
-   `queries:` computes its events from the command alone — no concurrent peer can
-   reach it, so it parallelises freely. One that *does* query is a read-modify-write
+1. **Projections for one model share a group, and that group runs serially.** A model
+   is a fold in log order; scatter its projections and the fold interleaves — silently,
+   and only under load. This is the rule a plausible-looking config is most likely to
+   break. N workers in one group, or one worker holding N units in flight, interleave
+   that same fold exactly as two groups do, so the rule is about concurrency and not
+   merely about group count: a group holding any projection is pinned to one lane.
+2. **Policies partition freely when they read nothing.** They react and dispatch;
+   commands dedupe on deterministic ids, so observing events in another group's order
+   is harmless. That argument is about event order and nothing else, so it stops where
+   the policy starts reading: a policy declaring `queries:` decides on a model exactly
+   as a procedure does, and rule 3 gates it identically.
+3. **An element partitions when it reads nothing.** A procedure or policy declaring no
+   `queries:` computes its output from the command or event alone — no concurrent peer
+   can reach it, so it parallelises freely. One that *does* query is a read-modify-write
    over a model a peer may be changing underneath it; with no aggregate key in the
    feature-file there is nothing to serialise it by, so a group holding one runs
-   serially. Per-aggregate keys are what would relax that second case, and until they
-   exist a reader is the only thing that pins a group to one lane.
+   serially. The discriminator is the `queries:` list, never the kind of the element
+   that declares it. Per-aggregate keys are what would relax that second case, and until
+   they exist a reader is the only thing that pins a group to one lane.
 4. **Queries are not in groups.** They are reads over a model. Placement is a
    question about the read substrate, not the log — which is why `ElementKind`
-   has no `queries` value.
+   has no `queries` value. A selector reaching a query name is refused, with the one
+   exception the name-space forces: nothing makes names unique across kinds, so an
+   exact `names:` entry that is *also* a declared procedure, policy or projection
+   unambiguously claims that element and is accepted. A glob gets no such exemption —
+   a pattern that sweeps up a query name reads as claiming the query, and is refused
+   even when it matches elements too — and neither does an exact name that resolves to
+   no element at all.
 
-Failure names the element and the rule it broke.
+Failure names the element and the rule it broke. Three smaller conditions are
+generation errors for the same reason the four rules are — a deployment that cannot
+be what it says it is should not be representable:
+
+- A group that can claim nothing — no `include` selectors and no `catch_all` — is a
+  typo with a runtime cost: a process consuming a cursor and running nothing.
+- A group that claims no element may not ask for concurrency. There is nothing in it
+  to spread.
+- An `include` selector must claim at least one element. An empty `names: []` claims
+  none, and is reported as such rather than widening to whatever its other fields
+  allow.
 
 ## What a group worker does
 
@@ -175,7 +199,7 @@ Three things fall out that are not yet designed:
   work). This wants to be a declared property of the policy in the *feature-file*
   — `backfill: none | from-genesis | from-heads` — decided when the policy is
   authored, not when it is deployed.
-- **Aggregate keys.** Rule 3 currently splits procedures on `queries:` — a sound
+- **Aggregate keys.** Rule 3 currently splits elements on `queries:` — a sound
   discriminator, but a blunt one. A procedure reading a model it never writes is
   safe to parallelise and is refused anyway; two reading disjoint aggregates likewise.
   An aggregate key in the feature-file is what would let the validator say yes to
