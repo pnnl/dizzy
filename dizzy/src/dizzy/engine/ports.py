@@ -9,6 +9,7 @@ field. Everything app-specific therefore arrives through one object:
     HostApp
       .graph              the FeatGraph — the declared topology, resolved
       .build_runtime()    build this process's Engine (the app's wiring)
+      .build_procedure_runtime()  a procedure-only Engine, for a pool child [optional]
       .routes()           command -> (pool, message options)   [optional]
       .otel               tracing/metrics/propagation provider  [optional]
       .origin_for()       correlation to carry on a dispatch    [optional]
@@ -25,6 +26,7 @@ a minimal app supplies two things.
 from __future__ import annotations
 
 import importlib
+import multiprocessing
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -53,6 +55,37 @@ class TelemetryBus(Protocol):
 
 
 Publish = Callable[[dict], None]
+
+
+# ── Which process this is: host, or a pool child a shell spawned ────────────
+
+POOL_CHILD_ENV = "DIZZY_POOL_CHILD"
+"""Marker a shell stamps into a process it spawned to RUN PROCEDURES ONLY.
+
+A pool child appends nothing and dispatches nothing, but until it declares
+:attr:`HostApp.build_procedure_runtime` it still builds the app's full runtime
+— which, for the generated wiring, means an ``EventStore`` on the path the
+parent's own store resolves to (inherited across the spawn). The marker is how
+the store learns that this process must not be able to write that file. It is
+a fact about the PROCESS, not about any app: nothing here is a feature's
+environment field."""
+
+
+def mark_pool_child() -> None:
+    """Stamp this process as a pool child. Only ever called IN the child.
+
+    Guarded on ``parent_process()`` rather than trusted from the variable
+    alone: an in-process ``pool_factory`` double runs the child entry point on
+    the HOST's own thread, and a marker set there would make the host's store
+    read-only for the rest of its life.
+    """
+    if multiprocessing.parent_process() is not None:
+        os.environ[POOL_CHILD_ENV] = "1"
+
+
+def in_pool_child() -> bool:
+    """True only inside a spawned pool child — never in the host process."""
+    return bool(os.environ.get(POOL_CHILD_ENV)) and multiprocessing.parent_process() is not None
 
 
 # ── The no-op tracing provider (a shell must run without OTel) ──────────────
@@ -219,6 +252,31 @@ class HostApp:
     decoding gets a door rather than being deleted."""
 
     service_name: str = "dizzy-worker"
+
+    build_procedure_runtime: Callable[[ShellServices], Runtime] | None = None
+    """A runtime that only needs to RUN PROCEDURES: environment hydration and
+    the procedure runners, with no store, no read-model writer and no command
+    queue — a pool child appends nothing and dispatches nothing.
+
+    ``None`` falls back to :attr:`build_runtime`, which is what lets a pool lane
+    run against every host that exists today without one of them changing a
+    line — but the fallback is not free. The child builds the app's FULL
+    runtime: with the generated wiring that means an ``EventStore`` on the path
+    the parent's own store resolves to (inherited across the spawn), so the
+    child OPENS the host's log and holds a connection to it for the worker's
+    lifetime. What it cannot do is write it: a child stamps itself
+    (:func:`mark_pool_child`) before the app builds anything, and a store built
+    in a marked process opens the file read-only — so the DAG schema's DDL,
+    which is a write transaction taken merely by constructing a store, does not
+    run against the host's log either. The events still go home to the one
+    writer. A host that pools anything owes itself this builder rather than the
+    fallback — it opens nothing at all — and the generator owes it an emitted
+    one, which it does not emit yet."""
+
+    def procedure_runtime(self, services: ShellServices) -> Runtime:
+        """The runtime a pool child builds: procedure-only where the app said
+        how, otherwise the full one."""
+        return (self.build_procedure_runtime or self.build_runtime)(services)
 
     @staticmethod
     def resolve(spec: str | None = None) -> HostApp:

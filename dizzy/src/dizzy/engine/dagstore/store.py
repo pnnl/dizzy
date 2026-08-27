@@ -20,7 +20,9 @@ convergence invariant the Hypothesis suite pins down.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import urllib.parse
 from collections.abc import Iterator
 from typing import Any
 
@@ -51,10 +53,29 @@ CREATE INDEX IF NOT EXISTS edges_by_parent ON edges(parent);
 class DagStore:
     """A single node's event DAG. ``:memory:`` (default) or a file path."""
 
-    def __init__(self, path: str = ":memory:", check_same_thread: bool = True):
+    def __init__(
+        self, path: str = ":memory:", check_same_thread: bool = True, read_only: bool = False
+    ):
         # check_same_thread=False lets a host share one store across threads;
         # the host must then serialize calls itself (sqlite3 connections are
         # not internally thread-safe).
+        #
+        # read_only opens the file through sqlite's `mode=ro` URI and runs no
+        # schema DDL. It exists for a process that must be able to READ this
+        # node's log and must not be able to touch it: the `CREATE TABLE IF NOT
+        # EXISTS` below is a write transaction, so merely CONSTRUCTING a store
+        # on another process's file takes that file's writer lock. A path that
+        # does not exist yet cannot be opened read-only at all, and is not the
+        # file this guard is protecting, so it falls through to the ordinary
+        # connection.
+        self.read_only = read_only and path != ":memory:" and os.path.exists(path)
+        if self.read_only:
+            self._db = sqlite3.connect(
+                f"file:{urllib.parse.quote(path)}?mode=ro",
+                uri=True,
+                check_same_thread=check_same_thread,
+            )
+            return
         self._db = sqlite3.connect(path, check_same_thread=check_same_thread)
         self._db.executescript(_SCHEMA)
         self._db.commit()

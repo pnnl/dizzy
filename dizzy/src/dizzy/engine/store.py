@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from dizzy.engine.dagstore import DagStore
+from dizzy.engine.ports import in_pool_child
 from dizzy.engine.registry import FeatGraph, snake_case
 from dizzy.engine.registry import graph as default_graph
 
@@ -107,17 +108,32 @@ class EventStore:
         path: str | Path | None = None,
         event_classes: Mapping[str, type] | None = None,
         graph: FeatGraph | None = None,
+        read_only: bool | None = None,
     ):
         """*event_classes* maps feat event name -> class, for
         :meth:`reconstruct_event`. Omit both it and *graph* and the store reads
         the ambient feat file when (and only when) something first reconstructs.
+
+        *read_only* defaults to "read the process". A pool child that has no
+        procedure-only runtime builds the app's FULL one, which opens a store
+        on the path the parent's own store resolves to — inherited across the
+        spawn. That child appends nothing (its events go home to the one
+        writer), but an ordinary connection would still run the DAG schema's
+        DDL against the host's log on the way in, and hold a writer connection
+        for the worker's lifetime. Opening read-only there costs the child
+        nothing it uses and takes the possibility away. Pass ``False`` to opt
+        out, ``True`` to ask for it anywhere.
         """
         if path is None:
             path = os.environ.get("DIZZY_STORE_PATH") or DEFAULT_STORE_PATH
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self.dag = DagStore(str(self.path), check_same_thread=False)
+        self.dag = DagStore(
+            str(self.path),
+            check_same_thread=False,
+            read_only=in_pool_child() if read_only is None else read_only,
+        )
         self._event_classes = dict(event_classes) if event_classes is not None else None
         self._graph = graph
 

@@ -38,6 +38,7 @@ may leak into ``Engine._events``.
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import queue
 import sqlite3
@@ -93,6 +94,22 @@ DEFAULT_LABEL_FIELDS: tuple[str, ...] = (
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _is_host_process() -> bool:
+    """True in the process that OWNS this queue, False in a worker child.
+
+    Crash recovery is a host action, not a side effect of opening the file. A
+    spawned worker re-imports the host's ``__main__`` as ``__mp_main__``, and a
+    host that builds its queue at module scope — the ordinary shape; an
+    ``if __name__ == "__main__":`` guard does not skip module-level
+    construction — therefore ran ``_recover()`` inside the child, re-queueing
+    the very row that child was spawned to run. The parent then ran it a second
+    time and the log held the fact twice. ``parent_process()`` is stdlib and
+    names nothing app-shaped: it is None only in a process multiprocessing did
+    not start.
+    """
+    return multiprocessing.parent_process() is None
 
 
 def _label_for(command: Any, fields: tuple[str, ...]) -> str:
@@ -154,7 +171,7 @@ class DurableCommandQueue:
         self._db.commit()
         self._cond = threading.Condition()
         self._subscribers: list[queue.Queue] = []
-        self.recovered = self._recover()
+        self.recovered = self._recover() if _is_host_process() else 0
         self._prune()
 
     # ── Producer side (engine policies + HTTP endpoints call this) ───────────
@@ -208,6 +225,24 @@ class DurableCommandQueue:
         itself a second lane, which is serialized separately and is not
         starved by this ordering.
         """
+        claimed = self.claim_fenced(timeout=timeout, lane=lane)
+        if claimed is None:
+            return None
+        job_id, _attempt, command = claimed
+        return job_id, command
+
+    def claim_fenced(
+        self, timeout: float | None = None, lane: str = "default"
+    ) -> tuple[int, int, Any] | None:
+        """:meth:`claim`, plus the ATTEMPT number this claim owns.
+
+        The attempt is a fencing token: it is what lets a worker's ack say
+        "this row, as I claimed it" rather than "this row, whatever has
+        happened to it since". Pass it back to :meth:`mark_done` /
+        :meth:`mark_error` and a completion belonging to a superseded attempt
+        — one a crash recovery re-queued and another worker has since picked
+        up — is refused instead of erasing the live attempt.
+        """
         with self._cond:
             while True:
                 row = self._db.execute(
@@ -224,12 +259,13 @@ class DurableCommandQueue:
                 (_now(), row["id"]),
             )
             self._db.commit()
+            attempt = int(row["attempts"]) + 1
             self._notify(row["id"])
         cls = self.registry.get(row["command_type"])
         if cls is None:
             self.mark_error(row["id"], f"unknown command type {row['command_type']!r}")
-            return self.claim(timeout=timeout, lane=lane)
-        return row["id"], cls.model_validate_json(row["payload_json"])
+            return self.claim_fenced(timeout=timeout, lane=lane)
+        return row["id"], attempt, cls.model_validate_json(row["payload_json"])
 
     def mark_running(self, job_id: int, trace_id: str | None = None) -> None:
         """External-executor status update: in mp mode this queue is a display
@@ -253,15 +289,34 @@ class DurableCommandQueue:
             ).fetchone()
         return dict(row) if row else None
 
-    def mark_done(self, job_id: int) -> None:
-        self._finish(job_id, "done", None)
+    def mark_done(self, job_id: int, attempt: int | None = None) -> bool:
+        return self._finish(job_id, "done", None, attempt)
 
-    def mark_error(self, job_id: int, error: str) -> None:
-        self._finish(job_id, "error", error[:4000])
+    def mark_error(self, job_id: int, error: str, attempt: int | None = None) -> bool:
+        return self._finish(job_id, "error", error[:4000], attempt)
 
-    def _finish(self, job_id: int, status: str, error: str | None) -> None:
+    def _finish(
+        self, job_id: int, status: str, error: str | None, attempt: int | None = None
+    ) -> bool:
+        """Move a row out of ``running``. False iff *attempt* was superseded.
+
+        With *attempt* given the write is FENCED: it lands only on a row that
+        is still ``running`` on that same attempt. A worker whose parent died
+        mid-procedure has its row re-queued by :meth:`_recover` and re-claimed
+        by the next process; an unfenced ack from the old attempt would then
+        land on the live row and erase a replay that had already been
+        scheduled, and the command would run nowhere at all. That is work loss,
+        which is the one thing at-least-once may not do. ``None`` keeps the
+        unfenced write hosts and the mp ledger use today.
+        """
         with self._cond:
-            row = self._db.execute("SELECT started_at FROM jobs WHERE id=?", (job_id,)).fetchone()
+            row = self._db.execute(
+                "SELECT started_at, status, attempts FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if attempt is not None and (
+                row is None or row["status"] != "running" or int(row["attempts"]) != attempt
+            ):
+                return False
             duration_ms = None
             if row and row["started_at"]:
                 started = datetime.fromisoformat(row["started_at"])
@@ -274,6 +329,7 @@ class DurableCommandQueue:
             self._notify(job_id)
         if status == "done" and job_id % 50 == 0:
             self._prune()
+        return True
 
     def retry(self, job_id: int) -> bool:
         """Requeue an errored job. Returns False if it isn't retryable."""
