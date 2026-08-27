@@ -258,20 +258,21 @@ class HostApp:
     the procedure runners, with no store, no read-model writer and no command
     queue — a pool child appends nothing and dispatches nothing.
 
-    ``None`` falls back to :attr:`build_runtime`, which is what lets a pool lane
-    run against every host that exists today without one of them changing a
-    line — but the fallback is not free. The child builds the app's FULL
-    runtime: with the generated wiring that means an ``EventStore`` on the path
-    the parent's own store resolves to (inherited across the spawn), so the
-    child OPENS the host's log and holds a connection to it for the worker's
-    lifetime. What it cannot do is write it: a child stamps itself
-    (:func:`mark_pool_child`) before the app builds anything, and a store built
-    in a marked process opens the file read-only — so the DAG schema's DDL,
-    which is a write transaction taken merely by constructing a store, does not
-    run against the host's log either. The events still go home to the one
-    writer. A host that pools anything owes itself this builder rather than the
-    fallback — it opens nothing at all — and the generator owes it an emitted
-    one, which it does not emit yet."""
+    The generated wiring emits one (``build_procedure_runtime``) and its
+    ``host_app()`` populates this field by default, so a generated host opens
+    no log in a child at all.
+
+    ``None`` still falls back to :attr:`build_runtime`, which is what lets a
+    pool lane run against a hand-written host that predates this field — but
+    the fallback is not free. The child builds the app's FULL runtime: with the
+    generated wiring that means an ``EventStore`` on the path the parent's own
+    store resolves to (inherited across the spawn), so the child OPENS the
+    host's log and holds a connection to it for the worker's lifetime. What it
+    cannot do is write it: a child stamps itself (:func:`mark_pool_child`)
+    before the app builds anything, and a store built in a marked process opens
+    the file read-only — so the DAG schema's DDL, which is a write transaction
+    taken merely by constructing a store, does not run against the host's log
+    either. The events still go home to the one writer."""
 
     def procedure_runtime(self, services: ShellServices) -> Runtime:
         """The runtime a pool child builds: procedure-only where the app said

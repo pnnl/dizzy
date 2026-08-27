@@ -7,6 +7,7 @@ break a running feature are asserted by name.
 """
 
 import ast
+from types import SimpleNamespace
 
 import pytest
 from dizzy.feat_schema import FeatureDefinition
@@ -363,3 +364,101 @@ def test_an_all_pool_topology_falls_back_to_the_lane_it_actually_declares():
     assert lane == "paid"
     assert lane in namespace["LANES"]
     assert namespace["LANES"][lane][0] == "pool"
+
+
+# ── The last hop: the emitted table's own consumers ────────────────────────
+
+
+def test_the_wiring_builds_the_queue_and_the_executor_its_topology_describes(isolation, tmp_path):
+    """The whole point of generating placement is that nothing restates it. So
+    these are executed, not matched: the emitted builders are run against the
+    real ``st`` shell and asked what they bound."""
+    from dizzy.engine.loop import Engine
+
+    feat, topology = isolation
+
+    class SendNotification: ...
+
+    class SummarizeRun: ...
+
+    namespace: dict = {
+        "Any": object,
+        # The only thing the placement block reaches outside itself, and only
+        # for the queue's rehydration registry.
+        "feat_graph": lambda: SimpleNamespace(
+            commands={"send_notification": SendNotification, "summarize_run": SummarizeRun}
+        ),
+    }
+    exec(_placement_block(render_wiring(feat, "labthing.feat.yaml", topology)), namespace)
+
+    queue = namespace["build_command_queue"](path=tmp_path / "queue.db")
+    try:
+        # Keyed by CLASS name, because that is what the queue persists and
+        # looks a row back up by — the feat's snake name would never match.
+        assert sorted(queue.registry) == ["SendNotification", "SummarizeRun"]
+        assert queue.lane_of(SendNotification()) == "default"
+        assert queue.priority_of(SendNotification()) == 1
+        assert queue.lane_of(SummarizeRun()) == "paid"
+        assert queue.priority_of(SummarizeRun()) == 0
+
+        executor = namespace["build_lane_executor"](queue, Engine(command_queue=queue, store=None))
+        assert executor._lanes == namespace["LANES"]
+        assert set(executor._pool_lanes) == {"paid"}
+        assert executor._pool_lanes["paid"].workers == 4
+        assert set(executor.inline_lanes) == {"fast", "default"}
+    finally:
+        queue.close()
+
+
+def test_a_topology_free_wiring_builds_no_shell_at_all(recipe_feat):
+    """The builders live inside the placement block, so a wiring with no
+    topology neither names a shell nor imports one — which is what lets an
+    ``mp`` host import the very same module."""
+    out = render_wiring(recipe_feat, "recipe.feat.yaml")
+    assert "build_lane_executor" not in out
+    assert "build_command_queue" not in out
+    assert "dizzy.engine.st" not in out
+
+
+def test_the_shell_import_is_function_local_even_when_a_topology_exists(isolation):
+    """Module scope must stay shell-neutral: a top-level ``from dizzy.engine.st
+    import ...`` would make every generated wiring — and every host that
+    imports one — pick a scheduler."""
+    feat, topology = isolation
+    tree = ast.parse(render_wiring(feat, "labthing.feat.yaml", topology))
+    top_level = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("dizzy.engine.st")
+    ]
+    assert top_level == []
+    assert "from dizzy.engine.st import LaneExecutor" in render_wiring(
+        feat, "labthing.feat.yaml", topology
+    )
+
+
+def test_the_host_block_emits_a_procedure_only_runtime(recipe_feat):
+    """The builder a pool child uses, and the binding that makes a generated
+    host use it without being asked. ``store=None`` is the whole property: a
+    child that constructs no store cannot open the host's log."""
+    out = render_wiring(recipe_feat, "recipe.feat.yaml")
+    tree = ast.parse(out)
+    builder = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "build_procedure_runtime"
+    )
+    call = next(
+        n
+        for n in ast.walk(builder)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "build_engine"
+    )
+    # Positional: (command_queue, store, resources). The store must be a literal
+    # None, not a default that some environment variable can fill in.
+    assert isinstance(call.args[1], ast.Constant) and call.args[1].value is None
+
+    host = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "host_app")
+    bound = {
+        kw.arg for n in ast.walk(host) if isinstance(n, ast.Call) for kw in n.keywords if kw.arg
+    }
+    assert "build_procedure_runtime" in bound

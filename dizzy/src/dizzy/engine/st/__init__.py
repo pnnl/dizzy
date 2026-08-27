@@ -26,11 +26,14 @@ A host may still drive ``claim → run_command → ack`` itself — nothing forc
 :class:`~dizzy.engine.st.executor.LaneExecutor` on it — but a host that wants
 more than one lane no longer has to write the threading.
 
-**The executor ships ahead of its wiring.** Nothing outside this package
-constructs one: no generator, no CLI verb, no example. ``dizzy generate
-wiring`` emits the ``LANES`` table the executor reads, and stops there — so a
-generated host today still serves one lane in its own loop, and a host that
-wants pool lanes builds the executor itself from that table.
+**The generated wiring builds both.** A ``dizzy generate wiring`` run over a
+feature with a ``topology.yaml`` emits ``build_command_queue()`` and
+``build_lane_executor(queue, engine)`` beside the ``LANES`` table, binding
+``lane_of``/``priority_of``/``lanes`` so a host never restates its own
+deployment. Both import this package function-locally, which is what keeps a
+wiring shell-neutral. What stays the host's is the LIFECYCLE — when to start,
+pump and stop — and the dials the topology does not state (``ordered``,
+``backlog``, ``poll_interval``).
 """
 
 from dizzy.engine.st.bus import TelemetryBus

@@ -437,7 +437,7 @@ def build_projection_runners(
 
 def build_engine(
     command_queue: Any,
-    store: EventStore,
+    store: EventStore | None,
     resources: Resources,
     observer: Callable[[str, Any], None] | None = None,
     commit: Callable[[], None] | None = None,
@@ -448,7 +448,11 @@ def build_engine(
 
     *command_queue* is the shell's: dispatches leave through it, and draining
     it is the shell's job. *commit* is the read-model transaction boundary the
-    engine owns — it fires once per event, after the fold, before policies."""
+    engine owns — it fires once per event, after the fold, before policies.
+
+    *store* may be None, which is what makes the procedure-only runtime below
+    possible: ``run_procedure`` reads neither the store nor the queue, so a
+    process that only runs procedures need open no log at all."""
     engine = Engine(
         command_queue=command_queue,
         store=store,
@@ -643,8 +647,40 @@ def build_runtime(
     return Runtime(engine=engine, session=session, refresh=refresh)
 
 
+def build_procedure_runtime(
+    services: ShellServices,
+    resources: Resources | None = None,
+    refresh: Callable[[], None] = lambda: None,
+) -> Runtime:
+    """The runtime a POOL CHILD builds: procedures, and nothing that writes.
+
+    ``store=None`` is the whole point. A pool child appends nothing, folds
+    nothing and dispatches nothing, so it must not OPEN the host's log to
+    prove it — and the full builder above would, because its store falls back
+    to the ``$DIZZY_STORE_PATH`` the child inherited across the spawn.
+
+    The same ``build_engine`` is used rather than a second, smaller one: the
+    projections and policies it also registers are never reached, because a
+    child only ever calls ``run_procedure``, and sharing the builder is what
+    keeps the child's procedures from drifting from the host's.
+
+    *resources* still matters: environment and telemetry are read inside each
+    runner, per call. The default ``Resources()`` is therefore correct only
+    while nothing a pool lane runs reads them — bind your own otherwise. What
+    it never needs is ``adapters``: a pool group may hold no projection and no
+    element declaring ``queries:``, which topology validation enforces, so a
+    pool-eligible procedure reads no model through DIZZY."""
+    engine = build_engine(
+        services.command_queue,
+        None,
+        resources if resources is not None else Resources(),
+    )
+    return Runtime(engine=engine, refresh=refresh)
+
+
 def host_app(
     build: Callable[[ShellServices], Runtime],
+    procedures: Callable[[ShellServices], Runtime] | None = None,
     **kwargs: Any,
 ) -> HostApp:
     """Package a runtime builder as the HostApp a shell resolves from
@@ -653,6 +689,21 @@ def host_app(
 
         app = host_app(lambda services: build_runtime(services, my_resources()))
 
+    *procedures* is what a spawned pool child builds instead. It defaults to
+    ``build_procedure_runtime`` with an empty ``Resources()``, which opens no
+    log at all; bind your own the same way as *build* when a pooled procedure
+    reads environment or telemetry::
+
+        app = host_app(
+            lambda services: build_runtime(services, res),
+            lambda services: build_procedure_runtime(services, res),
+        )
+
     Extra keyword arguments (``routes``, ``otel``, ``on_command_done``, …) pass
     straight through to ``HostApp``."""
-    return HostApp(graph=feat_graph(), build_runtime=build, **kwargs)
+    return HostApp(
+        graph=feat_graph(),
+        build_runtime=build,
+        build_procedure_runtime=procedures or build_procedure_runtime,
+        **kwargs,
+    )

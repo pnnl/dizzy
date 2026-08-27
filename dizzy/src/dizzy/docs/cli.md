@@ -183,8 +183,12 @@ silence. With no `topology.yaml` the wiring emits no placement at all, which is 
 module a build from before topology support would have produced. The executor that
 serves those lanes now exists — `dizzy.engine.st.executor.LaneExecutor` takes `LANES`
 verbatim and runs one inline lane in the calling thread plus one spawned process pool
-per `pool` lane — but no generated wiring constructs one yet: the table is still emitted
-ahead of its consumer, and a host wanting lanes today builds the executor itself.
+per `pool` lane — and the wiring binds the table into it: alongside the table it emits
+`build_command_queue()` (the durable queue with `lane_of`/`priority_of` already bound)
+and `build_lane_executor(queue, engine)` (the executor with `lanes=LANES` already
+bound). A host writes the lifecycle — `start`, `pump`, `stop` — and never the placement.
+Both imports are function-local, so a wiring stays shell-neutral and a topology-free
+build emits neither.
 
 **Wiring is a pure function of the feature-file and the topology, which is why it is
 generated.** The feat

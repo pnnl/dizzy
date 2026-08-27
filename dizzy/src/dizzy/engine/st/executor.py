@@ -16,15 +16,14 @@ CHILD dispatches nothing (its command queue refuses) and appends nothing.
 That last half is a property of the RUNTIME the child builds, not of anything
 this module can enforce: a host that declares
 :attr:`~dizzy.engine.ports.HostApp.build_procedure_runtime` gives the child an
-engine with no store at all, and a host that does not gets whatever
-``build_runtime`` opens — today, for the generated wiring, the parent's own
-event-store file. It still OPENS it, and that is the residue: what it cannot
-do is write it. A child stamps itself (:func:`~dizzy.engine.ports.in_pool_child`)
-before the app builds anything, and an ``EventStore`` built in a marked
-process opens the file read-only — no schema DDL against the host's log, no
-writer connection held for the worker's lifetime. A host pooling anything
-serious still owes itself the procedure-only builder, which opens nothing at
-all; the generator does not emit one yet.
+engine with no store at all, which the generated wiring now emits and binds by
+default. A host that does not gets whatever ``build_runtime`` opens — for the
+generated wiring, the parent's own event-store file. It still OPENS it, and
+that is the residue of the fallback: what it cannot do is write it. A child
+stamps itself (:func:`~dizzy.engine.ports.in_pool_child`) before the app builds
+anything, and an ``EventStore`` built in a marked process opens the file
+read-only — no schema DDL against the host's log, no writer connection held for
+the worker's lifetime.
 
 **The two lane kinds.**
 

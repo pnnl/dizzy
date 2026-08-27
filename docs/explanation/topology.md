@@ -285,26 +285,30 @@ drifts from `topology.yaml` in silence.
 What consumes it is `dizzy.engine.st.executor.LaneExecutor`, which reads `LANES`
 verbatim: one inline lane served in the calling thread, one background thread and one
 spawned process pool per `pool` lane, all over the single durable queue, with the log
-still written by exactly one thread. What does not exist yet is the last hop — no
-generated wiring constructs that executor, so a host that wants its lanes served today
-builds one itself from the table the wiring already emits.
+still written by exactly one thread. The last hop is generated too: beside the table the
+wiring emits `build_command_queue()` and `build_lane_executor(queue, engine)`, which
+bind `command_lane`/`command_priority` and `LANES` respectively. So a host writes the
+lifecycle — start, pump, stop — and never restates the deployment; the principle that
+placement is never hand-written does not stop at the table.
 
 **Most groups are both**, because rule 6 fuses readers with the folds they read
 and readers are mostly procedures. A hybrid worker's cycle is **fold to tail →
-run one command → fold to tail**. The leading fold is what carries the central
-guarantee across a group split: a policy-dispatched command is causally after
-the append of the event that triggered it, and positions are local insertion
-order, so a worker whose fold covers the command's arrival in the lane has
-necessarily already folded that command's triggering event. It needs no
-coordination, but it does need the fold to be taken *after* the claim, and
-`GroupWorker`'s command intake is today one opaque callable that claims and
-runs together — so a claim that blocks returns after the fold, and an event
-appended during that wait is not in the model the command reads. Closing that
-window means splitting the intake into claim and run; until it is, the property
-this paragraph states is the intent and not yet the behaviour. The trailing
-fold is for `run_command`'s own post-condition —
-that projections have folded by the time it returns — which every host that runs
-a command and then renders depends on.
+claim one command → fold to tail → run it → fold to tail**. A fold is what
+carries the central guarantee across a group split: a policy-dispatched command
+is causally after the append of the event that triggered it, and positions are
+local insertion order, so a worker whose fold covers the command's arrival in
+the lane has necessarily already folded that command's triggering event. It
+needs no coordination, but it does need the fold to be taken *after* the claim — which
+is why `GroupWorker`'s command intake is two callables, `claim` and `execute`,
+rather than one that does both. A claim may block for as long as it likes; the
+fold between the two picks up whatever was appended during the wait, so the
+event that dispatched the very command being claimed is in the model that
+command reads. Fusing them back together is exactly the defect the pair exists
+to prevent, and the fold is taken inside the worker rather than asked of the
+host so that forgetting it is not an option a host has. The trailing fold is
+for `run_command`'s own post-condition — that projections have folded by the
+time it returns — which every host that runs a command and then renders
+depends on.
 
 The guarantee that survives the split is not quite the one `ingest`
 states. It is: **the read model commits before the dispatched command runs.**

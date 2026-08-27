@@ -24,6 +24,7 @@ import pytest
 from _pool_app import (
     COMMAND_CLASSES,
     PoolBoom,
+    PoolOpenProbe,
     PoolPing,
     PoolPinged,
     PoolRendezvous,
@@ -995,6 +996,46 @@ def test_a_fallback_child_opens_the_hosts_log_read_only(tmp_path, monkeypatch):
         assert answer == "read_only=True REFUSED OperationalError", answer
         # One fact in the log, appended by the one writer: the child's attempt
         # left nothing behind. And it really was another process.
+        facts = list(host.store.iterate())
+        assert [e.payload["key"] for e in facts] == ["probe"]
+        assert facts[0].payload["pid"] != os.getpid()
+    finally:
+        host.close()
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc")
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("_pool_app:generated_app", "store=no open=[]"),
+        ("_pool_app:pre_generated_app", "store=yes open=['events.db']"),
+    ],
+    ids=["emitted-procedure-runtime", "the-shape-before-it"],
+)
+def test_a_generated_child_never_opens_the_hosts_log_at_all(tmp_path, monkeypatch, spec, expected):
+    """The cure, and the calibration that makes it mean something.
+
+    ``generated_app`` is the shape the wiring generator now emits: both
+    builders, ``build_procedure_runtime`` populated, and its engine's store is
+    None. ``pre_generated_app`` is the same module with that field left off —
+    the shape every generated wiring had before — and the child then builds the
+    full runtime whose store path it inherited.
+
+    Both run the SAME procedure, which reports its own ``/proc/self/fd``. The
+    second case is what turns the first from "the probe found nothing" into
+    "there is nothing to find": read-only was the mitigation, an empty fd table
+    is the cure."""
+    host = Host(tmp_path / "opened", lane_of=lambda c: "heavy")
+    marker = tmp_path / "open.txt"
+    monkeypatch.setenv("DIZZY_STORE_PATH", str(tmp_path / "opened" / "events.db"))
+    try:
+        job = host.queue.put(PoolOpenProbe(key="probe", marker=str(marker)), origin="external")
+        executor = LaneExecutor(host.queue, host.engine, lanes=POOL_LANES, host_app_spec=spec)
+        with executor:
+            assert executor.run_until_idle(30.0)
+        assert host.status_of(job) == "done", [j["error"] for j in host.queue.jobs()]
+        assert marker.read_text() == expected
+        # Either way the fact came home through the one writer, from elsewhere.
         facts = list(host.store.iterate())
         assert [e.payload["key"] for e in facts] == ["probe"]
         assert facts[0].payload["pid"] != os.getpid()

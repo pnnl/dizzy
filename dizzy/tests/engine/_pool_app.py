@@ -67,6 +67,20 @@ class PoolStoreProbe(BaseModel):
     marker: str
 
 
+class PoolOpenProbe(BaseModel):
+    """Asks the CHILD what it has OPEN — the cure, not the mitigation.
+
+    ``PoolStoreProbe`` above pins what a fallback child may DO to the host's
+    log; this one pins whether the file is touched at all. The answer is read
+    out of ``/proc/self/fd``, because "holds no connection" is a fact about
+    file descriptors and nothing weaker proves it: a store constructed and
+    never written still holds one.
+    """
+
+    key: str
+    marker: str
+
+
 class PoolSleep(BaseModel):
     """Blocks in the CHILD for *seconds* — the forty-second procedure, in
     miniature. Touches *marker* first so the parent can wait on the fact that
@@ -86,6 +100,7 @@ EVENT_CLASSES = {"pool_pinged": PoolPinged}
 COMMAND_CLASSES = {
     "PoolPing": PoolPing,
     "PoolStoreProbe": PoolStoreProbe,
+    "PoolOpenProbe": PoolOpenProbe,
     "PoolBoom": PoolBoom,
     "PoolCrashOnce": PoolCrashOnce,
     "PoolRendezvous": PoolRendezvous,
@@ -217,3 +232,73 @@ def report_queue_recovery(path: str, sink) -> None:
         sink.put((queue.recovered, [(j["id"], j["status"]) for j in queue.jobs()]))
     finally:
         queue.close()
+
+
+# ── The generated shape, both halves ────────────────────────────────────────
+
+
+def _open_logs() -> list[str]:
+    """Every path this process has open that looks like an event store.
+
+    ``/proc`` is Linux-only, and the test that reads this skips elsewhere. The
+    alternative — trusting ``engine.store is None`` — asserts the runtime the
+    child MEANT to build rather than the file handles it actually holds, and
+    the whole point of the assertion is the handle.
+    """
+    out = []
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:  # the fd closed under us, or the listdir's own handle
+            continue
+        if "events.db" in target:
+            out.append(os.path.basename(target))
+    return sorted(set(out))
+
+
+def _register_open_probe(engine: Engine) -> None:
+    def probe(command: PoolOpenProbe) -> None:
+        Path(command.marker).write_text(
+            f"store={'yes' if engine.store is not None else 'no'} open={_open_logs()}"
+        )
+        engine.emit_event(PoolPinged(key=command.key, pid=os.getpid()))
+
+    engine.register_procedure(PoolOpenProbe, probe, name="open_probe")
+
+
+def _generated_build_runtime(services: ShellServices) -> Runtime:
+    """What the generated ``build_runtime`` does: ``EventStore(graph=...)`` with
+    no path, so the path is the ``$DIZZY_STORE_PATH`` the child inherited."""
+    from dizzy.engine.store import EventStore
+
+    engine = Engine(command_queue=None, store=EventStore(event_classes=EVENT_CLASSES))
+    _register_open_probe(engine)
+    return Runtime(engine=engine)
+
+
+def _generated_build_procedure_runtime(services: ShellServices) -> Runtime:
+    """What the generated ``build_procedure_runtime`` does: the same procedures,
+    ``store=None``."""
+    engine = Engine(command_queue=None, store=None)
+    _register_open_probe(engine)
+    return Runtime(engine=engine)
+
+
+def generated_app() -> HostApp:
+    """The shape ``host_app()`` now emits: both builders, the child taking the
+    procedure-only one."""
+    return HostApp(
+        graph=FeatGraph.__new__(FeatGraph),
+        build_runtime=_generated_build_runtime,
+        build_procedure_runtime=_generated_build_procedure_runtime,
+    )
+
+
+def pre_generated_app() -> HostApp:
+    """The shape it emitted BEFORE: one builder, and the child falls back to it.
+    Here so the probe above is calibrated — a probe that reports "nothing open"
+    under both hosts is measuring nothing."""
+    return HostApp(
+        graph=FeatGraph.__new__(FeatGraph),
+        build_runtime=_generated_build_runtime,
+    )
