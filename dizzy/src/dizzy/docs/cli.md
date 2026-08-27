@@ -180,9 +180,11 @@ From a topology, `wiring` emits `COMMAND_PLACEMENT` — `type(command).__name__`
 count. Placement is emitted as data rather than as a callable a host writes: a callable
 is a second description of the deployment, and it drifts from `topology.yaml` in
 silence. With no `topology.yaml` the wiring emits no placement at all, which is the same
-module a build from before topology support would have produced. Nothing reads the table
-yet — the executor that serves two lanes from `LANES` is not built — so it is emitted
-ahead of its consumer, and a host wanting it today must read it itself.
+module a build from before topology support would have produced. The executor that
+serves those lanes now exists — `dizzy.engine.st.executor.LaneExecutor` takes `LANES`
+verbatim and runs one inline lane in the calling thread plus one spawned process pool
+per `pool` lane — but no generated wiring constructs one yet: the table is still emitted
+ahead of its consumer, and a host wanting lanes today builds the executor itself.
 
 **Wiring is a pure function of the feature-file and the topology, which is why it is
 generated.** The feat

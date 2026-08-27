@@ -55,13 +55,15 @@ interchangeable, and why this module ships only ``inprocess`` and takes any
 other as an argument.
 
 **Not yet wired.** No shell constructs a :class:`GroupWorker`: ``st`` and
-``mp`` still drain through :meth:`Engine.ingest`, and topology.yaml is
-validated rather than executed. The generator now emits the command-to-lane
-table (``COMMAND_PLACEMENT``/``LANES`` in the wiring), but nothing reads it —
-the executor that would serve two lanes from it is what is missing, along with
-any per-group wiring. This module is the mechanism a topology will be run
-through, and everything below describes what it does, not a shipped
-deployment.
+``mp`` still drain through :meth:`Engine.ingest`, and this module's per-group
+cursor is validated rather than executed. What has since arrived is the LANE
+half: :class:`dizzy.engine.st.executor.LaneExecutor` reads the generated
+``LANES``/``COMMAND_PLACEMENT`` table and serves a topology's lanes off one
+durable queue — and its ``pump()`` is deliberately the shape this module
+documents for ``commands=``, so the two compose rather than compete. No
+generated wiring builds either of them yet. This module is the mechanism a
+topology's REPLICATION half will be run through, and everything below
+describes what it does, not a shipped deployment.
 
 **Nothing here names a command, event, or environment field.** The elements a
 group claims arrive as arguments — the maps the wiring already built for the

@@ -282,8 +282,12 @@ lane its executor and worker count. It is generated **data**, never a hand-writt
 callable, because a callable is a second place the deployment is described and it
 drifts from `topology.yaml` in silence.
 
-What consumes it does not exist yet: the placement table is emitted and the executor
-that would serve two lanes from it is still to be built.
+What consumes it is `dizzy.engine.st.executor.LaneExecutor`, which reads `LANES`
+verbatim: one inline lane served in the calling thread, one background thread and one
+spawned process pool per `pool` lane, all over the single durable queue, with the log
+still written by exactly one thread. What does not exist yet is the last hop — no
+generated wiring constructs that executor, so a host that wants its lanes served today
+builds one itself from the table the wiring already emits.
 
 **Most groups are both**, because rule 6 fuses readers with the folds they read
 and readers are mostly procedures. A hybrid worker's cycle is **fold to tail →

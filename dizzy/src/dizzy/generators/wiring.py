@@ -415,9 +415,9 @@ def _render_placement(feat: FeatureDefinition, topology: Topology | None) -> lis
     how to serve each lane from ``LANES``, and a group's ``executor``/``workers`` are
     all it needs for that.
 
-    Emitted ahead of its consumer, deliberately: nothing reads this table yet — the
-    executor that serves two lanes from ``LANES`` is not built — so it is data a host
-    may read and not yet a description of how anything runs.
+    Emitted ahead of its consumer, deliberately: ``dizzy.engine.st.executor`` now reads
+    a table of this shape, but no generated wiring constructs that executor, so this is
+    still data a host may read rather than a description of how the generated host runs.
 
     Keyed on the command rather than on the procedure, which is ambiguous exactly where
     the ENGINE is: two procedures declaring one ``command:`` leave ``Engine._procedures``
@@ -473,8 +473,8 @@ def _render_placement(feat: FeatureDefinition, topology: Topology | None) -> lis
         "",
         "The lane is the name of the consumer group whose procedure runs the command;",
         "the priority is one of the two levels a topology may declare. For a shell to",
-        "read, never an element — and no shell reads it yet: the executor that serves",
-        'two lanes from LANES is not built."""',
+        "read, never an element. dizzy.engine.st.executor.LaneExecutor serves lanes",
+        'from a table of this shape; this wiring does not build one for you."""',
         "",
         f'DEFAULT_PLACEMENT: tuple[str, str] = ("{fallback}", "batch")',
         '"""Where a command this table does not name goes: the first declared lane that is',
