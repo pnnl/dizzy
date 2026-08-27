@@ -434,19 +434,14 @@ def hybrid(engine, store, cursors, model, dispatched):
     engine.register_policy(RecipeDefined, lambda e: dispatched.append(e.recipe_id), name="announce")
     pending = [DefineRecipe(recipe_id="r1")]
 
-    def commands() -> bool:
-        if not pending:
-            return False
-        engine.run_command(pending.pop(0))
-        return True
-
     return GroupWorker(
         "kitchen",
         engine,
         projections=engine.projection_runners(),
         policies=engine.policy_runners(),
         cursors=cursors,
-        commands=commands,
+        claim=lambda: pending.pop(0) if pending else None,
+        execute=engine.run_command,
     )
 
 
@@ -482,10 +477,69 @@ def test_a_hybrid_worker_folds_to_tail_before_it_runs_a_command(engine, store):
     )
     # Another group's fact, appended straight to the log.
     store.append(RecipeDefined(recipe_id="r0", servings=9))
-    worker.commands = lambda: (engine.run_command(StartBatch(recipe_id="r0")), True)[1]
+    worker.claim = lambda: StartBatch(recipe_id="r0")
 
     worker.step()
     assert seen == [{"r0": 9}]
+
+
+def test_the_fold_between_the_claim_and_the_run_covers_the_blocking_wait(engine, store):
+    """The window the split exists to close: an event appended WHILE the claim
+    blocks is in the model the claimed command reads. No fold taken before the
+    claim can cover it — that one ran before the append happened."""
+    model, dispatched, seen = Model(), [], []
+    engine.commit = model.commit
+    worker = hybrid(engine, store, MemoryCursorStore(), model, dispatched)
+    engine.register_procedure(
+        StartBatch, lambda c: seen.append(dict(model.committed)), name="start_batch"
+    )
+
+    claiming, release = threading.Event(), threading.Event()
+
+    def claim():
+        claiming.set()
+        assert release.wait(5)
+        return StartBatch(recipe_id="r0")
+
+    worker.claim = claim
+
+    # Two Events rather than a sleep, so the ordering is established by
+    # construction: `claiming` is set INSIDE the claim, hence after the leading
+    # fold returned, and the claim cannot return before the append below.
+    thread = threading.Thread(target=worker.step, daemon=True)
+    thread.start()
+    assert claiming.wait(5)
+    store.append(RecipeDefined(recipe_id="r0", servings=9))
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    assert seen == [{"r0": 9}]
+
+
+def test_an_empty_claim_runs_nothing_and_reports_no_work(engine):
+    """``None`` is the sentinel that replaces the fused callable's False, and
+    it now means only one thing — nothing was claimed. A command that ran and
+    changed nothing is work, and says so."""
+    ran = []
+    worker = GroupWorker(
+        "procedures", engine, claim=lambda: None, execute=lambda command: ran.append(command)
+    )
+    assert worker.step() is False
+    assert ran == []
+
+    worker.claim = lambda: DefineRecipe(recipe_id="r1")
+    assert worker.step() is True
+    assert ran == [DefineRecipe(recipe_id="r1")]
+
+
+def test_a_command_intake_is_refused_by_halves(engine):
+    """The fold lives BETWEEN claim and execute, so a worker given one of them
+    has nowhere to put the guarantee this module makes."""
+    with pytest.raises(ValueError, match="only one half"):
+        GroupWorker("procedures", engine, claim=lambda: None)
+    with pytest.raises(ValueError, match="only one half"):
+        GroupWorker("procedures", engine, execute=lambda command: None)
 
 
 def test_a_procedure_only_group_holds_no_cursor(engine, store):
@@ -496,13 +550,12 @@ def test_a_procedure_only_group_holds_no_cursor(engine, store):
     engine.register_procedure(DefineRecipe, lambda c: ran.append(c.recipe_id))
     pending = [DefineRecipe(recipe_id="r1")]
 
-    def commands() -> bool:
-        if not pending:
-            return False
-        engine.run_command(pending.pop(0))
-        return True
-
-    worker = GroupWorker("procedures", engine, commands=commands)
+    worker = GroupWorker(
+        "procedures",
+        engine,
+        claim=lambda: pending.pop(0) if pending else None,
+        execute=engine.run_command,
+    )
     assert worker.reads_log is False
     assert worker.step() is True
     assert worker.step() is False
@@ -669,7 +722,13 @@ def test_two_workers_on_one_lane_claim_each_command_once_in_order(tmp_path):
 def test_stop_stops_the_run_the_caller_started(engine):
     """`run` takes the caller's Event, so `stop()` has to set THAT one — a stop
     method that quietly sets a different flag is worse than none."""
-    worker = GroupWorker("procedures", engine, commands=lambda: False, poll_interval=300)
+    worker = GroupWorker(
+        "procedures",
+        engine,
+        claim=lambda: None,
+        execute=engine.run_command,
+        poll_interval=300,
+    )
     thread = threading.Thread(target=worker.run, args=(threading.Event(),), daemon=True)
     thread.start()
     worker.stop()
@@ -681,7 +740,9 @@ def test_a_procedure_only_group_puts_every_worker_on_one_lane(engine):
     """The third answer, which the constructor has to be able to build: no
     cursor is involved, so there is no shard either and all N workers are the
     whole group."""
-    workers = group_workers("kitchen", engine, workers=3, commands=lambda: False)
+    workers = group_workers(
+        "kitchen", engine, workers=3, claim=lambda: None, execute=engine.run_command
+    )
     assert [w.cursor_name for w in workers] == ["kitchen"] * 3
     assert not any(w.reads_log for w in workers)
 
@@ -719,7 +780,8 @@ def test_a_group_that_runs_commands_refuses_a_capped_fold(engine):
             engine,
             projections={RecipeDefined: [("recipe", lambda e, at: None)]},
             cursors=MemoryCursorStore(),
-            commands=lambda: False,
+            claim=lambda: None,
+            execute=engine.run_command,
             batch=3,
         )
 
@@ -765,10 +827,9 @@ def test_a_hybrid_worker_that_ingests_twice_in_one_cycle_still_dispatches_once(e
     engine.register_projection(RecipeDefined, model.fold, name="recipe")
     engine.register_policy(RecipeDefined, lambda e: dispatched.append(e.recipe_id), name="announce")
 
-    def commands() -> bool:
+    def execute(command) -> None:
         for recipe_id in ("r1", "r2"):
             engine.ingest(engine.run_procedure(DefineRecipe(recipe_id=recipe_id)))
-        return True
 
     worker = GroupWorker(
         "kitchen",
@@ -776,7 +837,8 @@ def test_a_hybrid_worker_that_ingests_twice_in_one_cycle_still_dispatches_once(e
         projections=engine.projection_runners(),
         policies=engine.policy_runners(),
         cursors=MemoryCursorStore(),
-        commands=commands,
+        claim=lambda: DefineRecipe(recipe_id="r1"),
+        execute=execute,
     )
 
     assert worker.step() is True

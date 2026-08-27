@@ -16,30 +16,43 @@ handlers, precisely so the two intakes cannot drift apart.
 the LOG and holds a cursor. A group claiming procedures consumes COMMANDS and
 holds a lane of the durable queue — no cursor, because a command is not in the
 log and there is no position to hold. Most groups are both, and a hybrid
-worker's cycle is *fold to tail -> run one command -> fold to tail*. The
-leading fold is what carries the ordering guarantee across a group split: a
-policy-dispatched command is causally after the append of the event that
-triggered it, and positions are local insertion order, so a worker whose fold
-covers the command's arrival has necessarily folded that command's triggering
-event. The trailing fold restores ``run_command``'s own post-condition —
-projections have folded by the time it returns.
+worker's cycle is *fold to tail -> claim one command -> fold to tail -> run it
+-> fold to tail*. A fold is what carries the ordering guarantee across a group
+split: a policy-dispatched command is causally after the append of the event
+that triggered it, and positions are local insertion order, so a worker whose
+fold covers the command's arrival has necessarily folded that command's
+triggering event. The trailing fold restores ``run_command``'s own
+post-condition — projections have folded by the time it returns.
 
 The guarantee that survives the split is therefore not quite
 ``ingest``'s. It is: **the read model commits before the dispatched
 command runs.** Inside one group those are the same sentence; across groups
 only the second is available.
 
-**Where that guarantee is not yet carried, stated rather than hidden.** The
-leading fold covers a command's cause only if the command was already in the
-lane when the fold ran. *commands* is today one opaque callable that claims
-AND runs, so a claim that BLOCKS waiting for work returns after the fold, and
-an event appended during that wait — with the command it dispatched — is not
-in the model the command then reads. The window is real and is not closed by
-anything here; closing it means splitting the seam into claim and run so the
-fold can be taken between them, which is a change to this module's interface
-and its callers, not a line inside :meth:`step`. Until then a group that both
-tails the log and blocks on a lane holds the weaker property: it folds to tail
-at some point before the command, not necessarily after the command's cause.
+**Why the intake is two callables and not one.** A single callable that
+claimed AND ran left a hole exactly the width of a blocking claim: the leading
+fold covers a command's cause only if the command was already in the lane when
+that fold ran, so an event appended while the claim waited — together with the
+command it dispatched — was missing from the model the command then read. The
+seam is therefore *claim* then *execute*, with a fold between them: a claim
+may block for as long as it likes, and whatever landed during the wait is
+folded and committed before the claimed command runs. The guarantee is
+enforced here rather than asked of the host on purpose — a host that had to
+call a fold hook between its own claim and its own run would reopen the window
+by forgetting to.
+
+**What that leaves, stated rather than hidden.** Two things, both bounded.
+The fold is taken when the claim RETURNS, so an event appended in the instant
+between that fold and the procedure's first read is not in the model — but
+that event is not the claimed command's cause (the command was already claimed
+when it was appended), so the guarantee this module states is untouched by it;
+"folded past the command's cause" is the property, not "folded past wall
+clock". And :meth:`fold_to_tail` can itself raise, which leaves a claimed
+command run by nobody. That is the same outcome as a worker dying in the same
+window, and it is the direction the durable queue is built to absorb — a row
+left running is recovered and re-delivered, at-least-once rather than lost.
+Deciding otherwise would mean an ack callable here, and with it the queue's
+failure vocabulary in a module whose whole boundary is that it has none.
 
 **Fairness is part of the semantics**, the way the shell already is. This loop
 folds first and runs at most one command per cycle: folding is what the
@@ -59,8 +72,12 @@ other as an argument.
 cursor is validated rather than executed. What has since arrived is the LANE
 half: :class:`dizzy.engine.st.executor.LaneExecutor` reads the generated
 ``LANES``/``COMMAND_PLACEMENT`` table and serves a topology's lanes off one
-durable queue — and its ``pump()`` is deliberately the shape this module
-documents for ``commands=``, so the two compose rather than compete. No
+durable queue. Its ``pump()`` is still one fused ``() -> bool``, which is the
+shape this module used to take and no longer does — composing the two means
+splitting ``pump`` the same way (claim a unit, then run it), and until that
+happens ``LaneExecutor`` drives its own loop rather than a worker's. Nothing
+this module promises depends on that: ``pump``'s own claim does not block and
+it holds no cursor, so the window closed here was never open there. No
 generated wiring builds either of them yet. This module is the mechanism a
 topology's REPLICATION half will be run through, and everything below
 describes what it does, not a shipped deployment.
@@ -178,10 +195,17 @@ class GroupWorker:
     reading them off the engine is what makes the LOG intake general: two
     log-only groups in one process are two workers over one engine.
 
-    *commands* is the group's command intake, if it claims procedures: a
-    callable that runs at most one unit of work and returns whether it did.
-    The durable queue is not imported here — a lane is the host's ``claim ->
-    run_command -> ack``, and this loop only needs to know whether it happened.
+    *claim* and *execute* are the group's command intake, if it claims
+    procedures, and they come as a pair: *claim* takes at most one unit of work
+    off the lane — blocking is allowed — and returns it, or ``None`` for
+    "nothing there"; *execute* is handed exactly that unit and runs it. The
+    unit is OPAQUE to this module, which is what keeps the durable queue
+    unimported here: a host's *claim* may return a bare command, or the whole
+    ``(job_id, attempt, command)`` a fenced claim produced, and its *execute*
+    is the host's own ``run_command -> ack``. All this loop needs is the
+    ``None`` sentinel, and the seam between the two — see :meth:`step` for what
+    it puts there. The runner is not called ``run`` because :meth:`run` is
+    already this class's loop.
 
     *engine* supplies :meth:`Engine.apply_event` (the ordering rule and the
     read-model commit, which the engine owns) and the store. On the LOG intake
@@ -205,7 +229,8 @@ class GroupWorker:
         projections: Mapping[type, list[tuple[str, Any]]] | None = None,
         policies: Mapping[type, list[tuple[str, Any]]] | None = None,
         cursors: CursorStore | None = None,
-        commands: Callable[[], bool] | None = None,
+        claim: Callable[[], Any] | None = None,
+        execute: Callable[[Any], Any] | None = None,
         doorbell: Doorbell | None = None,
         store: Any = None,
         event_classes: Mapping[str, type] | None = None,
@@ -219,7 +244,8 @@ class GroupWorker:
         self.store = store if store is not None else engine.store
         self.projections = dict(projections or {})
         self.policies = dict(policies or {})
-        self.commands = commands
+        self.claim = claim
+        self.execute = execute
         self._cursor_store = cursors
         self.doorbell = doorbell if doorbell is not None else InProcessDoorbell()
         self.poll_interval = poll_interval
@@ -227,16 +253,24 @@ class GroupWorker:
         """Entries to apply before returning from :meth:`fold_to_tail`, or None
         for "to the tail". A bound on a cycle's length, and on nothing else FOR
         A LOG-ONLY GROUP: the cursor is saved per entry either way, so a short
-        batch costs cycles and never work. It is refused alongside *commands*,
-        because there it would bound the leading fold — see :meth:`step`."""
+        batch costs cycles and never work. It is refused alongside *claim*,
+        because there it would bound the folds a claimed command's model rests
+        on — see :meth:`step`."""
         self._event_classes = event_classes
-        if batch is not None and commands is not None:
+        if (claim is None) != (execute is None):
+            raise ValueError(
+                f"group {group!r} was given only one half of its command intake: claim "
+                f"and execute are a pair, because the fold that puts the model ahead of a "
+                f"claimed command is taken BETWEEN them, and one alone has nowhere to put it"
+            )
+        if batch is not None and claim is not None:
             raise ValueError(
                 f"group {group!r} runs commands and cannot also cap its fold at "
-                f"batch={batch}: the leading fold of a hybrid cycle is what puts the "
+                f"batch={batch}: the fold between the claim and the run is what puts the "
                 f"model ahead of the command about to run, and a fold that stops short "
                 f"of the tail hands that command a model missing entries it should have "
-                f"seen. batch is a latency knob for a log-only group"
+                f"seen — the entry that caused it among them. batch is a latency knob for "
+                f"a log-only group"
             )
         if shards < 1 or not 0 <= shard < shards:
             raise ValueError(f"shard {shard} of {shards} is not a shard of anything")
@@ -358,15 +392,39 @@ class GroupWorker:
     def step(self) -> bool:
         """One cycle of the two intakes. True iff any work was done.
 
-        Fold to tail, then take at most one command, then fold to tail again —
-        the trailing fold skipping what the command's own cascade already
-        folded inline, so a policy that dispatched during ``run_command`` does
-        not dispatch a second time when the cursor walks over its event.
+        Fold to tail, claim at most one command, fold to tail AGAIN, run it,
+        then fold to tail once more — the last fold skipping what the command's
+        own cascade already folded inline, so a policy that dispatched during
+        ``run_command`` does not dispatch a second time when the cursor walks
+        over its event.
+
+        The middle fold is the point of the split. The leading one is taken
+        before the claim and so can only cover what was already in the lane;
+        a claim is allowed to BLOCK, and everything appended during that wait
+        — including the event whose policy dispatched the very command being
+        claimed — is folded and committed by the middle one, before the
+        command reads the model. Fusing the two calls back together is exactly
+        the defect this shape exists to prevent.
+
+        The leading fold is still worth taking: it keeps the group current
+        while the lane is empty, which is the whole of a hybrid worker's log
+        intake during idle periods, and it means the middle fold usually has
+        nothing left to walk.
+
+        ``None`` from *claim* means "nothing claimed", and is the only reason
+        this cycle skips the command half. It is a distinct answer from a
+        command that ran and changed nothing — which the fused boolean could
+        not tell apart, and which is now honestly reported as work done.
         """
         worked = self.fold_to_tail() > 0
-        if self.commands is not None and self.commands():
-            self.fold_to_tail(skip=self.engine.take_applied())
-            worked = True
+        if self.claim is not None:
+            command = self.claim()
+            if command is not None:
+                self.fold_to_tail()
+                assert self.execute is not None  # constructor refuses one without the other
+                self.execute(command)
+                self.fold_to_tail(skip=self.engine.take_applied())
+                worked = True
         return worked
 
     def run(self, stop: threading.Event | None = None) -> None:
