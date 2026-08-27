@@ -376,6 +376,38 @@ class TestDuplicateNames:
         errors = validate_feat(feat)
         assert any("procedures: 'handle' is declared more than once" in e for e in errors)
 
+    def test_two_procedures_on_one_command_is_refused(self):
+        """The engine keeps the last, the wiring generator keeps the first.
+
+        Both are defensible in isolation and together they disagree, so the
+        command is routed to the lane picked for the procedure that never runs.
+        Worse, the rule that lets a pooled procedure skip opening the log is a
+        check on `queries:` — and it would be checked against the wrong one.
+        """
+        feat = FeatureDefinition(
+            commands=[CommandDef(name="open", description="c")],
+            queries=[QueryDef(name="get_recipe", description="q")],
+            procedures=[
+                ProcedureDef(name="first", command="open"),
+                ProcedureDef(name="second", command="open", queries=["get_recipe"]),
+            ],
+        )
+        errors = validate_feat(feat)
+        assert any("'second' and 'first' both handle command 'open'" in e for e in errors), errors
+
+    def test_two_procedures_on_different_commands_is_fine(self):
+        feat = FeatureDefinition(
+            commands=[
+                CommandDef(name="open", description="c"),
+                CommandDef(name="close", description="c"),
+            ],
+            procedures=[
+                ProcedureDef(name="first", command="open"),
+                ProcedureDef(name="second", command="close"),
+            ],
+        )
+        assert validate_feat(feat) == []
+
     def test_same_name_in_two_sections_is_fine(self):
         """Nothing enforces cross-kind uniqueness — (kind, name) is the identity."""
         feat = FeatureDefinition(

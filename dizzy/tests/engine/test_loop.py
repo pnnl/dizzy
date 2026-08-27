@@ -391,6 +391,25 @@ def test_a_later_procedure_does_not_wipe_positions_nobody_has_read(engine):
     assert engine.take_applied() == (1,)
 
 
+def test_a_unit_that_nobody_drains_does_not_accumulate_positions(engine):
+    """The reset is what bounds the list, and only a host that never calls
+    `take_applied` can show it.
+
+    Every other test here drains, and a drain empties the list whether or not
+    `run_command` resets it — so all of them stay green with the reset removed.
+    The mp worker and the recipes example are both the undrained shape: without
+    the reset they grow one entry per command for the life of the process.
+    """
+    engine.register_procedure(
+        DefineRecipe, lambda c: engine.emit_event(RecipeDefined(recipe_id=c.recipe_id))
+    )
+    for n in range(25):
+        engine.run_command(DefineRecipe(recipe_id=f"r{n}"))
+    assert len(engine.applied_positions) == 1, (
+        "run_command must reset the applied positions at the unit boundary"
+    )
+
+
 def test_a_failure_mid_ingest_leaves_the_tail_where_the_shell_can_drop_it(engine):
     """Ingest appends first, so a raising projection leaves a prefix in the log —
     but the events it never reached stay on the engine's own queue, which is what

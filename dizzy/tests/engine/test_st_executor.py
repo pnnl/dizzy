@@ -15,10 +15,13 @@ from __future__ import annotations
 import multiprocessing
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
+from pathlib import Path
 
 import pytest
 from _pool_app import (
@@ -239,7 +242,7 @@ def test_without_a_pool_lane_nothing_is_ever_spawned(host, monkeypatch):
 
 
 def test_pump_reports_whether_it_did_anything(host):
-    """The exact contract GroupWorker documents for ``commands=``."""
+    """The contract pump keeps: one unit of work, and whether it did any."""
     executor = LaneExecutor(host.queue, host.engine)
     assert executor.pump() is False
     host.queue.put(InlineTick(key="a"), origin="external")
@@ -611,7 +614,7 @@ def test_every_unit_hands_over_its_applied_positions(two_lane):
 
 
 def test_owns_units_false_leaves_the_positions_for_the_group_worker(two_lane):
-    """Embedded as ``GroupWorker(commands=executor.pump)``: positions
+    """Driven by a caller that marks its own unit boundaries: positions
     accumulate across one pass and the worker drains one merged skip-list.
     Merging positions is safe; losing them is not."""
     two_lane.queue.put(PoolPing(key="p"), origin="external")
@@ -1096,3 +1099,47 @@ def _await(probe, deadline: float = DEADLINE, poll=None):
             return value
         time.sleep(0.005)
     raise AssertionError("condition was never reached")
+
+
+def test_a_module_scope_host_queue_is_not_recovered_by_the_spawn_reimport(tmp_path):
+    """The duplicate-fact bug, at the phase the in-child helper cannot reach.
+
+    ``report_queue_recovery`` builds its queue inside the child's TASK, which
+    runs after ``_bootstrap`` has set ``_parent_process`` — the one case that
+    always worked. The ordinary host builds at module scope, and a spawned
+    child re-imports that module BEFORE ``_bootstrap``, where
+    ``parent_process()`` is still None and the child reads as a host. This runs
+    a real ``__main__`` in that shape and asserts the child's re-import
+    recovered nothing.
+    """
+    db = tmp_path / "host-queue.db"
+    out = tmp_path / "probe.txt"
+
+    script = Path(__file__).with_name("_module_scope_host.py")
+    env = {
+        **os.environ,
+        "DIZZY_PROBE_DB": str(db),
+        "DIZZY_PROBE_OUT": str(out),
+        "PYTHONPATH": str(script.parent),
+    }
+    done = subprocess.run(
+        [sys.executable, str(script)], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+
+    reports = set(out.read_text(encoding="utf-8").splitlines())
+    assert "__main__ recovered=0 pool_child=False" in reports, (
+        f"the host opened a fresh queue and had nothing to recover; got {sorted(reports)}"
+    )
+    assert "__mp_main__ recovered=0 pool_child=True" in reports, (
+        "a spawned child's re-import re-queued the host's in-flight row, or opened "
+        f"the log read-write; got {sorted(reports)}"
+    )
+
+    # The row the host left running must still be running: a child that
+    # recovered it would have flipped it back to 'queued', and the host would
+    # then have run the same command a second time. Read the file directly —
+    # opening a DurableCommandQueue here would recover the row itself, this
+    # test process being a host, and destroy the evidence.
+    with sqlite3.connect(db) as probe:
+        assert [row[0] for row in probe.execute("SELECT status FROM jobs")] == ["running"]

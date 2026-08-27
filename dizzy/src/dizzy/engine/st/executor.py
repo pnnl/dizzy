@@ -349,11 +349,13 @@ class LaneExecutor:
     executors over one engine would consume each other's positions. That is
     asserted in the constructor rather than discovered by a double dispatch.
 
-    :meth:`pump` is deliberately the exact shape
-    :class:`dizzy.engine.groups.GroupWorker` documents for its ``commands=``
-    argument — "runs at most one unit of work and returns whether it did" — so
-    this composes with the group worker instead of competing with it. Pass
-    ``owns_units=False`` when embedding it that way; see that parameter.
+    :meth:`pump` keeps the shape "runs at most one unit of work and returns
+    whether it did". It no longer plugs straight into
+    :class:`dizzy.engine.groups.GroupWorker`, which took a fused ``commands=``
+    callable until that was split into ``claim``/``execute`` so a fold could sit
+    between the two; ``pump`` fuses them still and this executor therefore
+    drives its own loop. ``owns_units=False`` remains the seam for a caller that
+    marks unit boundaries itself — see that parameter.
     """
 
     def __init__(
@@ -397,10 +399,10 @@ class LaneExecutor:
         #: means this executor calls ``take_applied()`` after EVERY unit —
         #: which it must, because a completion's positions left undrained are
         #: cleared and lost by the next ``run_command``-shaped unit. False is
-        #: for ``GroupWorker(commands=executor.pump)``: positions then
-        #: accumulate across the completions and the inline command of one
-        #: pass, and the worker drains one merged skip-list. Merging positions
-        #: is safe; losing them is not.
+        #: for a caller that drains them itself: positions then accumulate
+        #: across the completions and the inline command of one pass, and that
+        #: caller drains one merged skip-list. Merging positions is safe;
+        #: losing them is not.
         self._queue = command_queue
         self._engine = engine
         self._lanes = dict(lanes) if lanes else dict(DEFAULT_LANES)

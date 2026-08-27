@@ -71,21 +71,48 @@ a fact about the PROCESS, not about any app: nothing here is a feature's
 environment field."""
 
 
+def _in_spawn_reimport() -> bool:
+    """True only while ``multiprocessing.spawn`` is re-importing this module.
+
+    CPython sets ``_inheriting`` for the duration of ``spawn.prepare()`` and
+    clears it before the task runs, which makes it the only reliable answer to
+    "am I a child?" during module-scope construction — ``parent_process()`` is
+    still None there, because ``_bootstrap`` assigns it afterwards.
+    """
+    return bool(getattr(multiprocessing.current_process(), "_inheriting", False))
+
+
+def _started_by_multiprocessing() -> bool:
+    """True in any process multiprocessing started, in EITHER of its phases."""
+    return multiprocessing.parent_process() is not None or _in_spawn_reimport()
+
+
 def mark_pool_child() -> None:
     """Stamp this process as a pool child. Only ever called IN the child.
 
-    Guarded on ``parent_process()`` rather than trusted from the variable
-    alone: an in-process ``pool_factory`` double runs the child entry point on
-    the HOST's own thread, and a marker set there would make the host's store
-    read-only for the rest of its life.
+    Guarded on :func:`_started_by_multiprocessing` rather than trusted from the
+    variable alone: an in-process ``pool_factory`` double runs the child entry
+    point on the HOST's own thread, and a marker set there would make the
+    host's store read-only for the rest of its life.
     """
-    if multiprocessing.parent_process() is not None:
+    if _started_by_multiprocessing():
         os.environ[POOL_CHILD_ENV] = "1"
 
 
 def in_pool_child() -> bool:
-    """True only inside a spawned pool child — never in the host process."""
-    return bool(os.environ.get(POOL_CHILD_ENV)) and multiprocessing.parent_process() is not None
+    """True only inside a spawned pool child — never in the host process.
+
+    The env marker alone is not enough and neither is the stdlib check alone.
+    ``mark_pool_child()`` runs in the child's TASK, which is well after the
+    child re-imports the host's ``__main__`` as ``__mp_main__`` — so a store
+    built at module scope asks this question before the marker exists. The
+    ``_inheriting`` half answers it correctly during that window; the marker
+    carries the answer for the rest of the child's life, once the re-import has
+    finished and ``_inheriting`` is False again.
+    """
+    if not _started_by_multiprocessing():
+        return False
+    return bool(os.environ.get(POOL_CHILD_ENV)) or _in_spawn_reimport()
 
 
 # ── The no-op tracing provider (a shell must run without OTel) ──────────────

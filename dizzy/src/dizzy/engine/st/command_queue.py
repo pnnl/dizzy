@@ -103,13 +103,28 @@ def _is_host_process() -> bool:
     spawned worker re-imports the host's ``__main__`` as ``__mp_main__``, and a
     host that builds its queue at module scope — the ordinary shape; an
     ``if __name__ == "__main__":`` guard does not skip module-level
-    construction — therefore ran ``_recover()`` inside the child, re-queueing
-    the very row that child was spawned to run. The parent then ran it a second
-    time and the log held the fact twice. ``parent_process()`` is stdlib and
-    names nothing app-shaped: it is None only in a process multiprocessing did
-    not start.
+    construction — would otherwise run ``_recover()`` inside the child,
+    re-queueing the very row that child was spawned to run. The parent then ran
+    it a second time and the log held the fact twice.
+
+    Both halves are load-bearing, because the hazard spans two phases of the
+    child's life and neither predicate covers the other:
+
+    * ``parent_process()`` is None until ``BaseProcess._bootstrap`` assigns it,
+      which happens AFTER the ``__mp_main__`` re-import — so during the exact
+      window this guard exists to close, it still reports "host".
+    * ``current_process()._inheriting`` is True only for the duration of that
+      re-import (``spawn.prepare``), and False by the time the task body runs.
+
+    Together they cover the child from its first imported line to its last.
+    Note what this does NOT claim: a host that multiprocessing itself started
+    (a ``spawn``-based supervisor's worker) reads as a child here and will not
+    recover. That is a known gap, tracked separately — not a licence to widen
+    this predicate, which would reopen the duplicate-fact bug above.
     """
-    return multiprocessing.parent_process() is None
+    if multiprocessing.parent_process() is not None:
+        return False
+    return not getattr(multiprocessing.current_process(), "_inheriting", False)
 
 
 def _label_for(command: Any, fields: tuple[str, ...]) -> str:
@@ -171,8 +186,14 @@ class DurableCommandQueue:
         self._db.commit()
         self._cond = threading.Condition()
         self._subscribers: list[queue.Queue] = []
-        self.recovered = self._recover() if _is_host_process() else 0
-        self._prune()
+        # Both are host actions and both WRITE: _recover flips rows back to
+        # queued, _prune DELETEs finished ones. A pool child opening this file
+        # must do neither — it is a reader of a queue it does not own.
+        if _is_host_process():
+            self.recovered = self._recover()
+            self._prune()
+        else:
+            self.recovered = 0
 
     # ── Producer side (engine policies + HTTP endpoints call this) ───────────
 

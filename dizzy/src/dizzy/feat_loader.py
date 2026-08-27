@@ -74,6 +74,24 @@ def validate_feat(feat: FeatureDefinition) -> list[str]:
                 )
             seen_names.add(item.name)
 
+    # One command, one procedure. Two procedures on the same command disagree
+    # about which one runs depending on who is asked: the engine registers by
+    # command type and so keeps the LAST, while the wiring generator's placement
+    # map keeps the FIRST. That routes the command to the lane chosen for the
+    # procedure that never runs — and, worse, checks the topology rule that lets
+    # a pooled procedure skip opening the log against the wrong procedure's
+    # `queries:`. Refuse it here rather than pick a winner downstream.
+    seen_commands: dict[str, str] = {}
+    for proc in feat.procedures or []:
+        first = seen_commands.get(proc.command)
+        if first is not None:
+            errors.append(
+                f"procedures: '{proc.name}' and '{first}' both handle command "
+                f"'{proc.command}' — a command must have exactly one procedure"
+            )
+        else:
+            seen_commands[proc.command] = proc.name
+
     command_names = {c.name for c in feat.commands or []}
     event_names = {e.name for e in feat.events or []}
     query_names = {q.name for q in feat.queries or []}
