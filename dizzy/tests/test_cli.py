@@ -1,6 +1,7 @@
 """End-to-end def + gen + lib integration tests."""
 
 import logging
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -10,6 +11,35 @@ from dizzy.cli import DOC_PAGES, app, def_cmd, gen, lib, wiring
 from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(scope="session")
+def _built_libs(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """def + gen + lib for the recipe feat, run ONCE for the whole session.
+
+    Every wiring test below starts from the same workspace and differs only in
+    the ``topology.yaml`` it then writes, and that prelude was ~8s of pipeline
+    each — the four topology tests were a quarter of the suite's wall clock to
+    validate a pure function of feat + topology. The build is 236K of text and
+    copies in milliseconds, so each test still gets its OWN tree to write into
+    and no assertion changes.
+    """
+    built = tmp_path_factory.mktemp("built-libs")
+    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=built)
+    (built / "libconfig.yaml").write_text(
+        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
+    )
+    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=built)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=built)
+    return built
+
+
+@pytest.fixture
+def libs(_built_libs: Path, tmp_path: Path) -> Path:
+    """A private copy of that workspace, for one test to write into."""
+    workspace = tmp_path / "workspace"
+    shutil.copytree(_built_libs, workspace)
+    return workspace
 
 
 def test_docs_pages_print_content() -> None:
@@ -270,22 +300,15 @@ def test_lib_python_uv_structure(tmp_path: Path) -> None:
     assert (proc_base / "src" / "extract_and_transform_recipe.py").exists()
 
 
-def test_wiring_stage_emits_a_workspace_package(tmp_path: Path) -> None:
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-
-    base = tmp_path / "lib" / "python-uv"
+def test_wiring_stage_emits_a_workspace_package(libs: Path) -> None:
+    base = libs / "lib" / "python-uv"
     # `libraries` must NOT list wiring: a member that does not exist yet makes the
     # whole workspace unresolvable.
     assert '"wiring",' not in (base / "pyproject.toml").read_text()
 
     wiring(
         feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-        output_dir=tmp_path,
+        output_dir=libs,
         dizzy_source=None,  # typer defaults only apply through the CLI
     )
 
@@ -296,20 +319,11 @@ def test_wiring_stage_emits_a_workspace_package(tmp_path: Path) -> None:
     assert '"wiring",' in workspace
 
 
-def test_wiring_error_when_topology_invalid(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_wiring_error_when_topology_invalid(libs: Path, caplog: pytest.LogCaptureFixture) -> None:
     """An invalid topology fails before any wiring is written."""
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-
     # Two groups claim recipe_library — placement must be decided in the file, not by
     # declaration order.
-    (tmp_path / "topology.yaml").write_text(
+    (libs / "topology.yaml").write_text(
         textwrap.dedent(
             """
             groups:
@@ -329,24 +343,17 @@ def test_wiring_error_when_topology_invalid(
         with pytest.raises(ClickExit) as exc_info:
             wiring(
                 feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-                output_dir=tmp_path,
+                output_dir=libs,
                 dizzy_source=None,
             )
     assert exc_info.value.exit_code == 1
     assert "recipe_library" in caplog.text
-    assert (tmp_path / "lib" / "python-uv" / "wiring").exists() is False
+    assert (libs / "lib" / "python-uv" / "wiring").exists() is False
 
 
-def test_wiring_succeeds_with_valid_topology(tmp_path: Path) -> None:
+def test_wiring_succeeds_with_valid_topology(libs: Path) -> None:
     """A topology the feat satisfies is read, validated, and generation proceeds."""
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-
-    (tmp_path / "topology.yaml").write_text(
+    (libs / "topology.yaml").write_text(
         textwrap.dedent(
             """
             groups:
@@ -364,30 +371,24 @@ def test_wiring_succeeds_with_valid_topology(tmp_path: Path) -> None:
 
     wiring(
         feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-        output_dir=tmp_path,
+        output_dir=libs,
         dizzy_source=None,
     )
 
-    assert (tmp_path / "lib" / "python-uv" / "wiring" / "src" / "wiring.py").exists()
+    assert (libs / "lib" / "python-uv" / "wiring" / "src" / "wiring.py").exists()
 
 
 def test_wiring_error_when_topology_is_malformed(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    libs: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A typo'd key is logged and exits 1 — never a traceback out of pydantic."""
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "topology.yaml").write_text("groups:\n  - name: all\n    catchall: true\n")
+    (libs / "topology.yaml").write_text("groups:\n  - name: all\n    catchall: true\n")
 
     with caplog.at_level(logging.ERROR, logger="dizzy"):
         with pytest.raises(ClickExit) as exc_info:
             wiring(
                 feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-                output_dir=tmp_path,
+                output_dir=libs,
                 dizzy_source=None,
             )
     assert exc_info.value.exit_code == 1
@@ -395,72 +396,47 @@ def test_wiring_error_when_topology_is_malformed(
     assert "catchall" in caplog.text
 
 
-def test_wiring_succeeds_without_topology_file(tmp_path: Path) -> None:
+def test_wiring_succeeds_without_topology_file(libs: Path) -> None:
     """topology.yaml is optional — its absence is the default single-group topology."""
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    assert not (tmp_path / "topology.yaml").exists()
+    assert not (libs / "topology.yaml").exists()
 
     wiring(
         feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-        output_dir=tmp_path,
+        output_dir=libs,
         dizzy_source=None,
     )
 
-    assert (tmp_path / "lib" / "python-uv" / "wiring" / "src" / "wiring.py").exists()
+    assert (libs / "lib" / "python-uv" / "wiring" / "src" / "wiring.py").exists()
 
 
-def test_the_generated_workspace_names_where_dizzy_comes_from(tmp_path: Path) -> None:
+def test_the_generated_workspace_names_where_dizzy_comes_from(libs: Path) -> None:
     """DIZZY is not on a package index — the name there is an unrelated project —
     so a generated workspace must always name a source for it."""
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
     wiring(
         feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-        output_dir=tmp_path,
+        output_dir=libs,
         dizzy_source=None,  # typer defaults only apply through the CLI
     )
 
-    workspace = (tmp_path / "lib" / "python-uv" / "pyproject.toml").read_text()
+    workspace = (libs / "lib" / "python-uv" / "pyproject.toml").read_text()
     assert "[tool.uv.sources]" in workspace
     assert 'dizzy = { git = "https://github.com/PNNL/dizzy" }' in workspace
 
 
-def test_dizzy_source_can_point_at_a_checkout(tmp_path: Path) -> None:
+def test_dizzy_source_can_point_at_a_checkout(libs: Path) -> None:
     """The usual case when the generated lib lives inside the repo that made it."""
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
     wiring(
         feat_file=FIXTURES_DIR / "recipe.feat.yaml",
-        output_dir=tmp_path,
+        output_dir=libs,
         dizzy_source="../../../..",
     )
 
-    workspace = (tmp_path / "lib" / "python-uv" / "pyproject.toml").read_text()
+    workspace = (libs / "lib" / "python-uv" / "pyproject.toml").read_text()
     assert 'dizzy = { path = "../../../..", editable = true }' in workspace
 
 
-def test_lib_rust_cargo_structure(tmp_path: Path) -> None:
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-
-    base = tmp_path / "lib" / "rust-cargo"
+def test_lib_rust_cargo_structure(libs: Path) -> None:
+    base = libs / "lib" / "rust-cargo"
     assert (base / "Cargo.toml").exists()
     proc_base = base / "procedure" / "extract_and_transform_recipe"
     assert (proc_base / "Cargo.toml").exists()
@@ -469,15 +445,8 @@ def test_lib_rust_cargo_structure(tmp_path: Path) -> None:
     assert (base / "gen_def" / "events.rs").exists()
 
 
-def test_lib_typescript_npm_structure(tmp_path: Path) -> None:
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-
-    base = tmp_path / "lib" / "typescript-npm"
+def test_lib_typescript_npm_structure(libs: Path) -> None:
+    base = libs / "lib" / "typescript-npm"
     assert (base / "package.json").exists()
     assert (base / "tsconfig.json").exists()
     policy_base = base / "policy" / "index_recipe_on_ingest"
@@ -488,16 +457,9 @@ def test_lib_typescript_npm_structure(tmp_path: Path) -> None:
     assert (base / "gen_def" / "events.ts").exists()
 
 
-def test_lib_does_not_overwrite_stubs(tmp_path: Path) -> None:
-    def_cmd(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    (tmp_path / "libconfig.yaml").write_text(
-        (FIXTURES_DIR / "multiruntime.libconfig.yaml").read_text()
-    )
-    gen(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
-
+def test_lib_does_not_overwrite_stubs(libs: Path) -> None:
     stub = (
-        tmp_path
+        libs
         / "lib"
         / "python-uv"
         / "procedure"
@@ -507,6 +469,6 @@ def test_lib_does_not_overwrite_stubs(tmp_path: Path) -> None:
     )
     stub.write_text("# my implementation\n")
 
-    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=tmp_path)
+    lib(feat_file=FIXTURES_DIR / "recipe.feat.yaml", output_dir=libs)
 
     assert stub.read_text() == "# my implementation\n"

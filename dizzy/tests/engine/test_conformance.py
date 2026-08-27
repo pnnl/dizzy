@@ -27,8 +27,9 @@ a policy advances whatever batch was blocked waiting for it.
 from __future__ import annotations
 
 import random
+import time
 from collections import deque
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from dizzy.engine.loop import Engine
@@ -594,3 +595,340 @@ def test_a_procedure_run_against_a_model_of_its_own_decides_on_stale_state(tmp_p
     batches, entities, _ = stale.snapshot()
     assert sorted(entities) == ["starter"]  # the chain never advanced past the first
     assert batches["loaf"] == "blocked"
+
+
+# ── A fourth scheduling model: st with POOL lanes ───────────────────────────
+#
+# ``dizzy.engine.st.executor.LaneExecutor`` is st with more lanes, not a third
+# shell — but a POOL lane changes what st promises, and that has to be said out
+# loud rather than discovered. An inline lane is sequentially consistent. A pool
+# lane runs its procedure CONCURRENTLY with the main lane and hands the events
+# back to be ingested, so the log order is a race and only the read models are
+# claimed. That is mp's guarantee arriving inside st, and these tests pin both
+# halves: convergent, and NOT sequentially consistent.
+#
+# The pools here are in-process doubles. Everything asserted below is
+# parent-side — the ack rule, the fold order, the reorder buffer — and spawning
+# real children to assert it would buy nothing but seconds. The boundary itself
+# (spawn, pickling, HostApp resolution) is covered in ``test_st_executor.py``.
+
+POOL_LANES = {"main": ("inline", 1), "background": ("pool", 2)}
+
+
+class _InProcessPool:
+    """Run the procedure on submit, in the calling thread, on a SECOND engine.
+
+    Immediate rather than threaded, deliberately: a real pool runs one task at
+    a time per worker, and that is what makes the child's per-process runtime
+    safe. A threaded double would share one engine's event queue and race.
+    """
+
+    def __init__(self, engine, results: list | None = None):
+        from dizzy.engine.st.executor import ProcedureResult
+
+        self._engine = engine
+        self._result = ProcedureResult
+        self.results = results if results is not None else []
+
+    def _run(self, lane, command):
+        try:
+            events = self._engine.run_procedure(command, lane=lane)
+        except Exception as exc:  # noqa: BLE001 - the child returns, never raises
+            self._engine.discard_pending_events()
+            return self._result(error=f"{type(exc).__name__}: {exc}", pid=-1)
+        return self._result(events=list(events), pid=-1)
+
+    def submit(self, fn, spec, sys_path, lane, command):
+        from concurrent.futures import Future
+
+        future: Future = Future()
+        future.set_running_or_notify_cancel()
+        future.set_result(self._run(lane, command))
+        return future
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
+
+
+class _ReversingPool(_InProcessPool):
+    """Compute on submit, but DELIVER newest-first, in pairs.
+
+    A deterministic reversal of the completion order with no sleeping and no
+    timing: results are held until two are pending (the lane is two workers
+    wide) and then released in reverse. A lone straggler is released by
+    :meth:`release` once the test can see the queue has nothing left to claim,
+    so the drain is a function of queue state rather than of wall clock.
+    """
+
+    def __init__(self, engine):
+        super().__init__(engine)
+        self._pending: list = []
+
+    def submit(self, fn, spec, sys_path, lane, command):
+        from concurrent.futures import Future
+
+        future: Future = Future()
+        future.set_running_or_notify_cancel()
+        self._pending.append((future, self._run(lane, command)))
+        return future
+
+    def release(self, counts: dict) -> bool:
+        """Deliver, newest-first, once every claimed row is held here.
+
+        Gated on the QUEUE rather than on a clock: ``running`` counts exactly
+        the rows a lane has claimed and the writer has not yet acked, so
+        ``running == len(pending)`` means every row this lane holds has reached
+        the double and nothing is in flight behind a claim it has not seen yet.
+        Not gated on ``queued`` being empty as well: a two-worker lane with a
+        third row still queued would then never release, and the run would
+        deadlock rather than reorder.
+        """
+        if not self._pending or len(self._pending) != counts.get("running"):
+            return False
+        held, self._pending = self._pending, []
+        for future, result in reversed(held):
+            future.set_result(result)
+        return True
+
+
+def _lane_of(command) -> str:
+    return "background"  # every command is pooled: one lane, maximum exposure
+
+
+def run_pooled(tmp_path, name: str, pool_cls, ordered: bool) -> tuple[ReadModel, EventStore]:
+    """st driven by ``LaneExecutor``, with every command on one POOL lane.
+
+    Two engines: the writer's, and the one standing in for a child. The
+    child's cannot append — ``NoWriteStore`` refuses — and its dispatches go
+    nowhere, which is the invariant the executor exists to keep.
+
+    Two deliberate departures from a real deployment, said out loud rather
+    than implied:
+
+    - the child is handed the parent's LIVE ``ReadModel``. A spawned child
+      cannot have that; what it has is a model somebody keeps current, which
+      is exactly the debt ``Engine.run_procedure`` names for a pooling host.
+      Sharing the object here is the strongest version of that assumption, and
+      the run converges with an isolated one too.
+    - both fixture procedures QUERY a read model, and the shipped topology
+      validator refuses ``executor: pool`` for exactly that (rule 3 in
+      ``topology_loader``). They are pooled anyway, to maximise the exposure
+      this file is trying to measure — a legal topology would not place them
+      here, and nothing below should be read as saying it could.
+    """
+    from dizzy.engine.st import DurableCommandQueue, LaneExecutor
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    read_model = ReadModel()
+    store = EventStore(path=tmp_path / f"{name}.db", event_classes=EVENT_CLASSES)
+    command_queue = DurableCommandQueue(
+        registry=COMMAND_CLASSES, path=tmp_path / f"{name}-queue.db", lane_of=_lane_of
+    )
+    main = build_engine(read_model, command_queue, store)
+    child = build_engine(read_model, Queue(), NoWriteStore(store).as_store())
+    pool = pool_cls(child)
+    try:
+        for command in SCRIPT:
+            command_queue.put(command, origin="external")
+        executor = LaneExecutor(
+            command_queue,
+            main,
+            lanes=POOL_LANES,
+            pool_factory=lambda lane, workers: pool,
+            ordered=ordered,
+        )
+        with executor:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                worked = executor.pump()
+                if executor.idle():
+                    break
+                # Every claimed row is held in the double: let them go, in
+                # whatever order the double has decided on.
+                release = getattr(pool, "release", None)
+                if release is not None and release(command_queue.counts()):
+                    worked = True
+                if not worked:
+                    time.sleep(0.001)
+        assert executor.idle(), "the pooled run never reached quiescence"
+    finally:
+        command_queue.close()
+    return read_model, store
+
+
+def test_a_pool_lane_converges_on_the_defined_read_models(tmp_path):
+    """The claim st-with-pool-lanes actually makes. Same wiring, same script,
+    the procedures run somewhere else and their events come home to the one
+    writer — and the read models are the sequential shell's, exactly."""
+    pooled, _ = run_pooled(tmp_path / "pooled", "p", _InProcessPool, ordered=False)
+    sequential, _ = run_sequential(tmp_path / "seq")
+    assert pooled.snapshot() == sequential.snapshot()
+
+
+def test_a_pool_lane_folding_in_completion_order_reorders_the_stream(tmp_path):
+    """And the claim it does NOT make. Completion order is the default because
+    a lane whose whole purpose is that a slow procedure must not hold the queue
+    cannot also promise to fold in claim order. The stream differs from the
+    sequential shell's; the read models do not."""
+    pooled, pooled_store = run_pooled(tmp_path / "rev", "r", _ReversingPool, ordered=False)
+    sequential, sequential_store = run_sequential(tmp_path / "seq")
+    pooled_stream = [(e.type, e.payload) for e in pooled_store.iterate()]
+    sequential_stream = [(e.type, e.payload) for e in sequential_store.iterate()]
+    assert pooled_stream != sequential_stream  # the reordering is real
+    assert sorted(map(str, pooled_stream)) == sorted(map(str, sequential_stream))
+    assert pooled.snapshot() == sequential.snapshot()  # and it costs nothing
+
+
+def test_the_reorder_buffer_buys_back_the_stream_one_lane_at_a_time(tmp_path):
+    """``ordered=True`` folds one pool lane's results in the order that lane
+    CLAIMED them. Here every command is on that one lane and the run drains to
+    quiescence, which is the only shape in which that adds up to the sequential
+    stream — and stating the shape is the point.
+
+    It is NOT determinism in general. A pool procedure runs concurrently with
+    the main lane, so whether its events land before or after the inline
+    command the main lane happens to be running is a race, every time. A test
+    that wants a deterministic log with an inline lane in play wants
+    ``executor: inline``, which already exists."""
+    ordered, ordered_store = run_pooled(tmp_path / "ord", "o", _ReversingPool, ordered=True)
+    sequential, sequential_store = run_sequential(tmp_path / "seq")
+    assert ordered.snapshot() == sequential.snapshot()
+    assert [(e.type, e.payload) for e in ordered_store.iterate()] == [
+        (e.type, e.payload) for e in sequential_store.iterate()
+    ]
+
+
+def test_an_inline_lane_keeps_the_sequential_guarantee_intact(tmp_path):
+    """The executor is st with MORE lanes, not different ones: drive it with no
+    pool lane at all and the shell's own promise is untouched — same stream,
+    same models, and nothing spawned."""
+    from dizzy.engine.st import DurableCommandQueue, LaneExecutor
+
+    (tmp_path / "inline").mkdir(parents=True, exist_ok=True)
+    read_model = ReadModel()
+    store = EventStore(path=tmp_path / "inline" / "i.db", event_classes=EVENT_CLASSES)
+    command_queue = DurableCommandQueue(registry=COMMAND_CLASSES, path=tmp_path / "inline" / "q.db")
+    engine = build_engine(read_model, command_queue, store)
+    try:
+        for command in SCRIPT:
+            command_queue.put(command, origin="external")
+        with LaneExecutor(command_queue, engine) as executor:
+            assert executor.pool_lanes == ()
+            assert executor.run_until_idle(10.0)
+    finally:
+        command_queue.close()
+    sequential, sequential_store = run_sequential(tmp_path / "seq")
+    assert read_model.snapshot() == sequential.snapshot()
+    assert [(e.type, e.payload) for e in store.iterate()] == [
+        (e.type, e.payload) for e in sequential_store.iterate()
+    ]
+
+
+# ── The guarantee table, asserted rather than described ─────────────────────
+#
+# Three lane classes ship, and each one makes a DIFFERENT promise. Above, each
+# is pinned by its own test; what follows states the three side by side, so the
+# table itself is a thing that fails when a promise moves. The floor is the
+# same everywhere — the read models converge — and the STREAM is what
+# discriminates: a class claiming sequential consistency must reproduce the
+# sequential shell's log exactly, and the convergent class must not be held to
+# it, because a pool procedure racing the main lane cannot promise it.
+
+LANE_GUARANTEES = {
+    "inline": "sequential",
+    "pool": "convergent",
+    "pool+reorder": "sequential",
+}
+
+
+def run_inline_lane(tmp_path) -> tuple[ReadModel, EventStore]:
+    """The executor with no topology at all: one inline lane, nothing spawned."""
+    from dizzy.engine.st import DurableCommandQueue, LaneExecutor
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    read_model = ReadModel()
+    store = EventStore(path=tmp_path / "inline.db", event_classes=EVENT_CLASSES)
+    command_queue = DurableCommandQueue(registry=COMMAND_CLASSES, path=tmp_path / "inline-q.db")
+    engine = build_engine(read_model, command_queue, store)
+    try:
+        for command in SCRIPT:
+            command_queue.put(command, origin="external")
+        with LaneExecutor(command_queue, engine) as executor:
+            assert executor.pool_lanes == ()
+            assert executor.run_until_idle(10.0)
+    finally:
+        command_queue.close()
+    return read_model, store
+
+
+def _stream(store: EventStore) -> list[tuple[str, dict]]:
+    return [(e.type, e.payload) for e in store.iterate()]
+
+
+@pytest.mark.parametrize("lane_class", sorted(LANE_GUARANTEES))
+def test_each_lane_class_keeps_exactly_the_guarantee_it_claims(tmp_path, lane_class):
+    """One table, one assertion per row.
+
+    ``sequential`` is asserted as stream equality with the defined result;
+    ``convergent`` is asserted as read-model equality AND stream INEQUALITY,
+    because a weaker promise that happens to coincide is not evidence — a
+    convergent lane that silently became sequential would be a design change,
+    and this fails when it happens in either direction.
+    """
+    if lane_class == "inline":
+        actual, actual_store = run_inline_lane(tmp_path / "inline")
+    else:
+        actual, actual_store = run_pooled(
+            tmp_path / lane_class.replace("+", "-"),
+            "g",
+            _ReversingPool,
+            ordered=lane_class.endswith("reorder"),
+        )
+    defined, defined_store = run_sequential(tmp_path / "defined")
+
+    assert actual.snapshot() == defined.snapshot()  # the floor, everywhere
+    if LANE_GUARANTEES[lane_class] == "sequential":
+        assert _stream(actual_store) == _stream(defined_store)
+    else:
+        assert _stream(actual_store) != _stream(defined_store)
+        assert sorted(map(str, _stream(actual_store))) == sorted(map(str, _stream(defined_store)))
+
+
+def _mixed_lane_of(command) -> str:
+    # The shape a real topology has: the slow, query-free procedure is pooled
+    # and everything else stays on the main lane.
+    return "background" if isinstance(command, OpenBatch) else "main"
+
+
+def test_a_mixed_topology_converges_with_both_lane_kinds_live(tmp_path):
+    """Both lane kinds at once, which is the only configuration a deployment
+    actually ships: pooled procedures completing on a lane thread while the
+    main lane claims, runs and ingests on its own. Nothing here can be timed
+    into a fixed order — that is the point — and the read models are still the
+    sequential shell's, exactly."""
+    from dizzy.engine.st import DurableCommandQueue, LaneExecutor
+
+    root = tmp_path / "mixed"
+    root.mkdir(parents=True, exist_ok=True)
+    read_model = ReadModel()
+    store = EventStore(path=root / "m.db", event_classes=EVENT_CLASSES)
+    command_queue = DurableCommandQueue(
+        registry=COMMAND_CLASSES, path=root / "m-q.db", lane_of=_mixed_lane_of
+    )
+    main = build_engine(read_model, command_queue, store)
+    child = build_engine(read_model, Queue(), NoWriteStore(store).as_store())
+    try:
+        for command in SCRIPT:
+            command_queue.put(command, origin="external")
+
+        def factory(lane: str, workers: int) -> Any:
+            return _InProcessPool(child)
+
+        executor = LaneExecutor(command_queue, main, lanes=POOL_LANES, pool_factory=factory)
+        with executor:
+            assert executor.run_until_idle(10.0)
+    finally:
+        command_queue.close()
+    defined, _ = run_sequential(tmp_path / "defined")
+    assert read_model.snapshot() == defined.snapshot()
+    assert all(status == "completed" for status in read_model.batches.values())
