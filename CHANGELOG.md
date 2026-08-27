@@ -60,6 +60,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     byte-identical output.
   - `generate definitions` writes the section into new stubs with `[commands, queries]`.
 
+#### Deployment topology
+
+- **`topology.yaml`** — an optional, separate file declaring where a feature's
+  elements run. The feature-file says what the system *is*; the topology says how
+  it is *deployed*, and the two are validated against each other. The unit is the
+  **consumer group** — a set of elements sharing one cursor over the event log —
+  so worker count is scaling and group count is semantics.
+  - `dizzy generate wiring` reads it and emits `COMMAND_PLACEMENT`, `LANES`,
+    `DEFAULT_PLACEMENT` and `placement_of()`. A build with no `topology.yaml`
+    emits none of it and is byte-identical to before.
+  - Placements the feature-file forbids are rejected at generation time. The
+    rules are written down in [Deployment topology](docs/explanation/topology.md);
+    rules 1-5 are enforced, rule 6 is specified only.
+  - The rule that decides whether an element may be spread across workers keys on
+    whether it declares `queries:` — not on whether it is a procedure or a policy.
+    An element that reads a model has a read-modify-write to protect; one that
+    reads nothing does not.
+- **The single-machine executor** (`dizzy.engine.st.LaneExecutor`) — the main lane
+  runs inline, pool lanes run in spawned children. Two independent latency problems
+  get two mechanisms: a two-level command priority for queue-position latency, and
+  a spawned pool for head-of-line latency behind a slow procedure.
+  - `Engine.run_command` splits into `run_procedure` (emits events, touches no
+    store) and `ingest` (appends and folds), which is what lets the halves sit in
+    different processes. Only the write side is store-free: a procedure that
+    queries a read model still reads one.
+  - `generate wiring` emits `build_procedure_runtime`, the runtime a pool child
+    builds — `store=None`, so a child never opens the host's log at all.
+  - **One writer, always.** A pool child runs a procedure body and hands events
+    back as data; the host appends them. Children have no projections and no cursor.
+- **Cursors and consumer groups** — `engine.cursors` (`MemoryCursorStore`,
+  `SqliteCursorStore`; `save` is monotone) and `engine.groups` (`GroupWorker`, and
+  a doorbell that carries wake-ups only — correctness comes from the cursor, never
+  from the notification).
+
 #### Documentation and project tooling
 
 - **[What DIZZY is (and why events)](docs/explanation/what-is-dizzy.md)** — an
@@ -72,6 +106,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs and tests and lockfiles included.
 
 ### Changed
+
+#### Runtime behaviour — these affect every DIZZY app, not only topology users
+
+- **`EventStore.append` returns the appended row's own position**, taken from the
+  INSERT inside the transaction. It was previously derived as `len(dag) - 1` after
+  the transaction had closed, which named the wrong row whenever two writers were
+  appending.
+- **A name declared twice within one feature-file section is now an error.** Every
+  consumer keys on `(kind, name)` — the topology loader's placement maps, the
+  generated package's symbols — so a repeat silently shadowed one of the two
+  elements. The dict-key YAML form makes this unrepresentable; the list form did
+  not. **A feature-file that generated before may now fail to load.**
+- **A command handled by two procedures is now an error.** The engine registers by
+  command type and kept the last; the wiring generator's placement map kept the
+  first. The command was routed to the lane chosen for the procedure that never
+  ran.
 
 #### Packaging and distribution
 
