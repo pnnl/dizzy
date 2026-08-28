@@ -230,6 +230,18 @@ def _catalog_feat() -> FeatureDefinition:
     )
 
 
+def _reader_and_fold_feat() -> FeatureDefinition:
+    """A procedure reading a model a projection folds — the fixture rule 6 exists for."""
+    return _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        procedures=[{"name": "open_batch", "command": "open", "queries": ["get_recipe"]}],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+
+
 # --- structural -----------------------------------------------------------------------
 
 
@@ -1044,6 +1056,254 @@ def test_validate_split_suppressed_when_double_claimed(tmp_path: Path) -> None:
     assert not any("rule 1" in e for e in errors)
 
 
+# --- rule 6 -------------------------------------------------------------------------------
+
+
+def _split_topology(tmp_path: Path) -> Topology:
+    """The fold in one group, everything else swept into another."""
+    return load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: folds
+                include:
+                  - kind: projections
+              - name: rest
+                catch_all: true
+            """,
+        )
+    )
+
+
+def test_validate_reader_split_from_the_model_it_reads_rejected(tmp_path: Path) -> None:
+    """The reader decides on a model its own group does not fold — a different event."""
+    errors = validate_topology(_split_topology(tmp_path), _reader_and_fold_feat())
+    assert any(
+        "open_batch" in e
+        and "'rest'" in e
+        and "catalog" in e
+        and "'folds'" in e
+        and "get_recipe" in e
+        and "rule 6" in e
+        for e in errors
+    )
+
+
+def test_validate_reader_sharing_the_fold_it_reads_is_clean(tmp_path: Path) -> None:
+    """Co-membership is the cure: one group, one cursor, one lane."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: folds
+                include:
+                  - kind: projections
+                  - kind: procedures
+              - name: rest
+                catch_all: true
+            """,
+        )
+    )
+    assert validate_topology(topology, _reader_and_fold_feat()) == []
+
+
+def test_validate_reading_policy_split_from_its_fold_rejected(tmp_path: Path) -> None:
+    """Rule 6 discriminates on `queries:`, never on the kind that declares it."""
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        policies=[{"name": "index_recipe", "event": "e", "queries": ["get_recipe"]}],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+    errors = validate_topology(_split_topology(tmp_path), feat)
+    assert any("policy 'index_recipe'" in e and "rule 6" in e for e in errors)
+
+
+def test_validate_query_free_element_is_untouched_by_rule_6(tmp_path: Path) -> None:
+    """Reading nothing, it computes from the command alone — distance costs it nothing."""
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        procedures=[{"name": "ingest_recipe", "command": "ingest"}],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+    assert validate_topology(_split_topology(tmp_path), feat) == []
+
+
+def test_validate_reader_of_an_unfolded_model_is_placed_freely(tmp_path: Path) -> None:
+    """No projection folds `catalog`, so no group holds it and none is the one to join."""
+    feat = _feat(
+        models=[{"name": "catalog"}, {"name": "batches"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        procedures=[{"name": "open_batch", "command": "open", "queries": ["get_recipe"]}],
+        projections=[
+            {"name": "batch_ledger", "description": "d", "event": "e", "model": "batches"}
+        ],
+    )
+    assert validate_topology(_split_topology(tmp_path), feat) == []
+
+
+def test_validate_query_naming_no_model_constrains_nothing(tmp_path: Path) -> None:
+    """A query with no `model:` reads nothing the log folds — there is no fold to trail."""
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "find_thing", "description": "d"}],
+        procedures=[{"name": "open_batch", "command": "open", "queries": ["find_thing"]}],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+    assert validate_topology(_split_topology(tmp_path), feat) == []
+
+
+def test_validate_two_queries_over_one_model_are_one_message(tmp_path: Path) -> None:
+    """One placement mistake with one fix, and the message still names both queries."""
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[
+            {"name": "get_recipe", "description": "d", "model": "catalog"},
+            {"name": "get_recipe_text", "description": "d", "model": "catalog"},
+        ],
+        procedures=[
+            {
+                "name": "open_batch",
+                "command": "open",
+                "queries": ["get_recipe", "get_recipe_text", "get_recipe"],
+            }
+        ],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"}
+        ],
+    )
+    errors = [e for e in validate_topology(_split_topology(tmp_path), feat) if "rule 6" in e]
+    assert len(errors) == 1
+    assert "'get_recipe' and 'get_recipe_text'" in errors[0]
+
+
+def test_validate_reader_of_two_models_names_each_offending_model(tmp_path: Path) -> None:
+    """Two cohorts, two messages: no single move repairs it, the cohorts must merge."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: catalog_fold
+                include:
+                  - model: catalog
+              - name: batch_fold
+                include:
+                  - model: batches
+              - name: rest
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}, {"name": "batches"}],
+        queries=[
+            {"name": "get_recipe", "description": "d", "model": "catalog"},
+            {"name": "get_batch", "description": "d", "model": "batches"},
+        ],
+        procedures=[
+            {
+                "name": "open_batch",
+                "command": "open",
+                "queries": ["get_recipe", "get_batch"],
+            }
+        ],
+        projections=[
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"},
+            {"name": "batch_ledger", "description": "d", "event": "e", "model": "batches"},
+        ],
+    )
+    errors = [e for e in validate_topology(topology, feat) if "rule 6" in e]
+    assert len(errors) == 2
+    assert any("'catalog'" in e and "'catalog_fold'" in e for e in errors)
+    assert any("'batches'" in e and "'batch_fold'" in e for e in errors)
+
+
+def test_validate_rule_6_suppressed_when_the_cohort_is_split(tmp_path: Path) -> None:
+    """A model folded in two groups has no owner: one message, and it is rule 1's."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: hot
+                include:
+                  - names: [ingredient_catalog]
+              - name: cold
+                include:
+                  - names: [recipe_catalog]
+              - name: rest
+                catch_all: true
+            """,
+        )
+    )
+    feat = _feat(
+        models=[{"name": "catalog"}],
+        queries=[{"name": "get_recipe", "description": "d", "model": "catalog"}],
+        procedures=[{"name": "open_batch", "command": "open", "queries": ["get_recipe"]}],
+        projections=[
+            {
+                "name": "ingredient_catalog",
+                "description": "d",
+                "event": "e",
+                "model": "catalog",
+            },
+            {"name": "recipe_catalog", "description": "d", "event": "e", "model": "catalog"},
+        ],
+    )
+    errors = validate_topology(topology, feat)
+    assert any("rule 1" in e for e in errors)
+    assert not any("rule 6" in e for e in errors)
+
+
+def test_validate_rule_6_suppressed_when_the_reader_is_double_claimed(tmp_path: Path) -> None:
+    """A doubly claimed reader belongs to nobody, so there is no group to compare."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: folds
+                include:
+                  - kind: projections
+              - name: readers
+                include:
+                  - names: [open_batch]
+              - name: rest
+                catch_all: true
+                include:
+                  - names: ["open_*"]
+            """,
+        )
+    )
+    errors = validate_topology(topology, _reader_and_fold_feat())
+    assert any("open_batch" in e and "rule 5" in e for e in errors)
+    assert not any("rule 6" in e for e in errors)
+
+
+def test_validate_one_group_satisfies_rule_6_by_construction(tmp_path: Path) -> None:
+    """`st` as a topology: one group claims the reader and the fold, so rule 6 is free."""
+    topology = load_topology(
+        _write(
+            tmp_path,
+            """
+            groups:
+              - name: everything
+                catch_all: true
+            """,
+        )
+    )
+    assert validate_topology(topology, _reader_and_fold_feat()) == []
+
+
 # --- rule 2 and the workers gate -----------------------------------------------------------
 
 
@@ -1471,8 +1731,7 @@ def test_validate_recipe_topology_clean(tmp_path: Path, recipe_feat: FeatureDefi
               - name: folds
                 include:
                   - model: recipes
-              - name: reactions
-                include:
+                  - kind: procedures
                   - kind: policies
               - name: rest
                 catch_all: true
@@ -1527,6 +1786,12 @@ def test_validate_single_catch_all_group(tmp_path: Path, recipe_feat: FeatureDef
 # A-RETRY-COHERENCE / A-TRANSPORT-URL / A-UNKNOWN-FIELDS — accepted silently; no rule
 #     makes `initial_delay_ms` or `url` required, and parsed objects reach us, so an
 #     unknown key never does.
+# A-UNFOLDED-MODEL — a model no projection folds sits in no group, so rule 6 gives its
+#   readers no group to share and does not constrain them. Rule 6 says the reader shares
+#   with what FOLDS the model; where nothing folds it, there is no sharer to name.
+# A-MODEL-LESS-QUERY — a query stating no `model:` reads none of the models the log
+#   folds, so it contributes nothing to rule 6. Rule 3 still counts it: that rule keys on
+#   the `queries:` list, this one on the models those queries reach.
 # A-COMMAND-LOG — the placeable universe is procedures + policies + projections. Command
 #     requests are not placeable elements today, whatever the log ends up recording.
 #
@@ -1817,6 +2082,35 @@ def oracle_is_legal(topology: Topology | None, feat: FeatureDefinition) -> bool:
         if holders > 1:
             legal = False
 
+    # T-RULE6-READER-SHARES-GROUP: the group claiming an element must also claim every
+    # projection folding every model that element's queries read. Quantified over models
+    # a projection actually folds: a model nothing folds sits in no group, so there is no
+    # group for its reader to share (ruling A-UNFOLDED-MODEL), and a query stating no
+    # `model:` reads none of them (ruling A-MODEL-LESS-QUERY). A cohort straddling two
+    # groups has already lost T-RULE1; the verdict is a boolean, so this block may say so
+    # a second time.
+    query_model = {}
+    for q in feat.queries or []:
+        query_model[q.name] = q.model
+    reads_of = {}
+    for p in feat.procedures or []:
+        reads_of[("procedures", p.name)] = list(p.queries or [])
+    for y in feat.policies or []:
+        reads_of[("policies", y.name)] = list(y.queries or [])
+
+    for idx in range(len(groups)):
+        for kind, name, _model in claimed[idx]:
+            for entry in reads_of.get((kind, name), []):
+                m_read = query_model.get(entry)
+                if m_read is None:
+                    continue
+                for other in range(len(groups)):
+                    if other == idx:
+                        continue
+                    for o_kind, _o_name, o_model in claimed[other]:
+                        if o_kind == "projections" and o_model == m_read:
+                            legal = False
+
     # T-RULE2-POLICIES-FREE: policies partition freely, and a group holding only policies
     # scales freely. This rule can only exonerate, so there is nothing to reject here.
 
@@ -2029,7 +2323,7 @@ def _selectors(
 
 
 def _make_topology(rng: random.Random, feat: FeatureDefinition) -> Topology:
-    """A random topology over *feat*, legal about one draw in seven.
+    """A random topology over *feat*, legal about one draw in nine.
 
     The perturbations below are drawn independently of one another and of the knobs, so a
     single draw can carry several defects at once — that is the case where the validator's
@@ -2239,13 +2533,30 @@ def test_metamorphic_concurrency_gate(
     kind = rng.choice(["procedures", "policies", "projections"])
     checked = 0
     # Draw until enough draws actually declare the chosen kind — policies and projections
-    # are both optional, so a fixed draw count can leave the assertion never reached.
-    for _ in range(40):
+    # are both optional, so a fixed draw count can leave the assertion never reached. The
+    # budget is 60 rather than 40 because rule 6 disqualifies two draws in three of those
+    # that declare the kind (measured: 523 of 1586), and 40 leaves four seeds short.
+    for _ in range(60):
         if checked == 6:
             break
         feat = _make_feat(rng)
         universe = _gen_universe(feat)
         if not any(_PLURAL[k] == kind for k, _ in universe):
+            continue
+        # Rule 6 puts a reader in the group folding what it reads, so a split by kind is
+        # a legal baseline only where the readers that end up alone read nothing the other
+        # side folds. Drawn for rather than repaired: fusing the reader closure into
+        # `target` would put a projection in every scaled group and shadow rule 3 with
+        # rule 1 forever, which is the shape this test exists to reach.
+        folded = {p.model for p in feat.projections or [] if p.model}
+        model_of = {q.name: q.model for q in feat.queries or []}
+        by_kind = {"procedures": feat.procedures or [], "policies": feat.policies or []}
+        separated = (
+            list(by_kind["procedures"]) + list(by_kind["policies"])
+            if kind == "projections"
+            else list(by_kind[kind])
+        )
+        if any(model_of.get(q) in folded for e in separated for q in e.queries or []):
             continue
         checked += 1
         # All of one kind in the target group keeps rule 1 satisfied either way: a model's

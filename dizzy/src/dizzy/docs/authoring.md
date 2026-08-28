@@ -321,8 +321,9 @@ Optionally, you also author a `topology.yaml` beside `libconfig.yaml` before thi
 it says WHERE the elements run — which of them share a cursor over the event log, how
 many workers serve each such group. Omit it and every element runs in one group, which
 is exactly today's behaviour. Write one and it is validated against the feat here: an
-element claimed by two groups or by none, or one model's projections split across
-groups, fails generation naming the element and the rule.
+element claimed by two groups or by none, one model's projections split across
+groups, or an element whose `queries:` read a model some other group folds, fails
+generation naming the element and the rule.
 
 **You do not author this, and you should not edit it** — it is a pure function of the
 feature-file and that topology, regenerated whenever either changes. That is the point: the routing is

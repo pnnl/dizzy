@@ -41,9 +41,10 @@ The design has to serve both of these, and they are not the same shape.
 | Must not lose | A 429-test suite that finishes in ~17s in-process | Any unit of work, ever |
 
 Both are expressible in the current draft, which is the main evidence the schema
-is not just labthing's problem in YAML. Both are shown here as written against the
-schema as it stands, and rule 6 below costs each of them an edit — said there rather than quietly fixed
-here, because what the edit costs is the argument:
+is not just labthing's problem in YAML. Both are shown here as first drafted, and
+rule 6 below costs each of them an edit the validator now insists on — left
+standing rather than quietly repaired here, because what the edit costs is the
+argument:
 
 ```yaml title="isolation"
 groups:
@@ -146,8 +147,10 @@ Topology makes it take a second input and emit one wiring **per group**.
 
 The six placement rules are all statically checkable against the feature-file, so
 they are generation errors, not runtime races. Make the bad state
-unrepresentable, not detectable. Rules 1-5 are enforced by `validate_topology`
-today; rule 6 is specified here and not yet implemented:
+unrepresentable, not detectable. All six are enforced by `validate_topology`,
+each against a second, naive implementation the property suite runs the real one
+against. Five of them have a rejection test of their own; rule 2 is a licence and
+so has acceptance tests instead — there is nothing for it to reject:
 
 1. **Projections for one model share a group, and that group runs serially.** A model
    is a fold in log order; scatter its projections and the fold interleaves — silently,
@@ -196,6 +199,12 @@ today; rule 6 is specified here and not yet implemented:
    forbids concurrency *within* its group, this one says it forbids *distance* from
    the model it reads. An element that reads nothing is untouched by both, which is
    why the paid `*_completion` tier and the 32-wide `expand_*` tier survive unchanged.
+   Two things it is silent about, deliberately. A query stating no `model:` reads
+   nothing the log folds, and a model no projection folds sits in no group at all —
+   neither gives a reader a group to share, so neither constrains where it goes.
+   That is where rule 6 and rule 3 stop agreeing: an element whose every query is
+   model-less or unfolded still pins its group to one lane and may still be placed
+   anywhere.
 
 Co-membership is the only cure for that divergence that stays static, and it works
 because inside one group there is one cursor and one lane — rules 1 and 3 already pin
@@ -231,12 +240,15 @@ Thin, and a property of recipes (a chained workflow where nearly every decision 
 shared state) rather than of the rule.
 
 **Both worked topologies above pay for it, and the isolation one is illegal as
-written.** `fast` claims *every* projection, so every querying procedure the `default`
-catch-all sweeps up — `open_batch` and `run_batch` in the recipes shape — now breaks
-rule 6, and the only legal repair is to move them onto `fast`: the group whose stated
-job is to hold the lock and stay quick. What survives is the thing that topology was
-bought for, because the `paid` tier reads nothing and still comes off the lock; what
-rule 6 takes away is splitting *read-decisions* off it. The fan-out topology pays the
+written** — `dizzy generate wiring` refuses it, naming the reader and the group
+folding what it reads. `fast` claims *every* projection, so every querying procedure
+the `default` catch-all sweeps up — `open_batch` and `run_batch` in the recipes shape —
+breaks rule 6, and the only legal repair is to move them onto `fast`, the group whose
+stated job is to hold the lock and stay quick — `include: [{kind: projections},
+{kind: policies}, {kind: procedures, names: [open_batch, run_batch]}]`. What
+survives is the thing that topology was bought for, because the `paid` tier reads
+nothing and still comes off the lock; what rule 6 takes away is splitting
+*read-decisions* off it. The fan-out topology pays the
 same way and not, as an earlier draft of this section said, by narrowing one selector:
 `{model: artifact_ledger}` now determines where every reader of `artifact_ledger` lives,
 wherever the catch-all would otherwise have put it, so the ledger group and its readers
@@ -320,14 +332,26 @@ branching on that reads a model further ahead than `st` would have handed it.
 Models still converge — that is confluence — but two topologies' logs need not
 agree entry for entry, which is the residual the last section names.
 
-The expectation that goes with rule 6 — and it is an expectation, with no
-harness in the tree yet to hold it: over randomized interleavings of a fixture,
-one hybrid group should reproduce `st`'s read models *and* its stream entry for
-entry, a rule-6-legal split should diverge in neither, and a layout that
-violates rule 6 should diverge in some of them by reading an empty model,
-dispatching nothing, and killing a cascade permanently. That is what the
-property test named at the end of this document is for; no number here has been
-measured, and none should be quoted until it has.
+The expectation that goes with rule 6 is narrower than an earlier draft of this
+section claimed, and the correction came from modelling the worker rather than from
+running it. What rule 6 buys is the guarantee stated just above — the read model has
+committed through the command's *cause* before the procedure runs — and that holds
+with the worker exactly as written. What it does not buy is `st`'s guarantee. The
+worker's cycle folds to tail, claims, folds to tail, then runs, and nothing holds a
+lock between that second fold and the procedure's first read; another group may append
+in the gap. So a rule-6-legal deployment can still decide on a model that is behind
+the log, and two rule-6-legal decisions can each miss the other with no serial order
+explaining both. "Byte-identical models, entry for entry" is therefore false for the
+worker as it stands, and it is a claim to stop making until the claim→execute window
+is closed — a lock, or a re-check of the tail after the claim, which is a design
+decision on its own evidence and not a consequence of rule 6.
+
+Violating rule 6 loses even the weak guarantee: the reader decides on a model that has
+not folded the command's own cause. Reading an empty model and killing a cascade is one
+way that shows up, and the cheapest to demonstrate, but the general failure is a stale
+read reaching a decision, not an empty one. The property test named at the end of this
+document is what would put numbers on any of it; none here has been measured, and none
+should be quoted until it has.
 
 The cost is a fairness policy the earlier draft never contemplated. A hybrid
 worker chooses between draining its lane and advancing its cursor;

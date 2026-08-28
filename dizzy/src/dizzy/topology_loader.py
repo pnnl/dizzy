@@ -385,13 +385,19 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 "'catch_all' (rule 5)"
             )
 
+    # `owner` is rule 6's half of this loop: the group a model's fold lives in, which is
+    # only a fact once rule 1 holds. A model whose cohort straddles two groups, or whose
+    # projections were all dropped by the sole-membership filter above, has no owner —
+    # and a model no projection folds never enters the map at all.
+    owner: dict[str, str] = {}
     for model in feat.models or []:
         cohort = [
             p
             for p in feat.projections or []
             if p.model == model.name and len(claims[("projection", p.name)]) == 1
         ]
-        if len({claims[("projection", p.name)][0] for p in cohort}) > 1:
+        holders = {claims[("projection", p.name)][0] for p in cohort}
+        if len(holders) > 1:
             placements = _and_list(
                 [f"'{p.name}' (group '{claims[('projection', p.name)][0]}')" for p in cohort]
             )
@@ -399,21 +405,64 @@ def validate_topology(topology: Topology, feat: FeatureDefinition) -> list[str]:
                 f"model '{model.name}': projections {placements} fold one model in different "
                 "consumer groups — one model's projections must share a group (rule 1)"
             )
+        elif holders:
+            owner[model.name] = next(iter(holders))
+
+    # The reader map, keyed on the `queries:` list and never on the kind that declares it:
+    # rule 2 exonerates a policy for observing events out of order, which says nothing
+    # about the model it reads, and the generated policy context carries a real `query:`
+    # handle. Keyed on the (kind, name) PAIR because nothing makes names unique across
+    # kinds. Rules 3 and 6 are the same fact on two axes and read it from here both times.
+    reads: dict[tuple[str, str], list[str]] = {
+        ("procedure", p.name): list(p.queries or []) for p in feat.procedures or []
+    }
+    reads.update({("policy", y.name): list(y.queries or []) for y in feat.policies or []})
+
+    # Rule 6. Rule 3 pins a reader's group to one lane; this pins the reader to one GROUP —
+    # the one folding what it reads. The asymmetry is the point: what the log records about
+    # a read is the DECISION, never the model, so a reader whose group trails the fold it
+    # reads does not emit the same event late, it emits a DIFFERENT one, and no refold puts
+    # back an entry the log is short.
+    #
+    # Reported per (element, model), not per query: two queries over one model are one
+    # placement mistake with one fix, and the fix names the model's group.
+    #
+    # Silent wherever a group is not a fact. An element claimed twice or not at all has no
+    # group and a model with no owner has no fold to be distant from — rules 5 and 1 have
+    # already named those, and a second message about the same artifact is the cascade
+    # `members` exists to prevent. A model no projection folds constrains nobody: nothing
+    # here folds it, so no placement of this feature-file can put a reader behind it.
+    query_model = {q.name: q.model for q in feat.queries or []}
+    for kind, name in universe:
+        claimants = claims[(kind, name)]
+        if len(claimants) != 1:
+            continue
+        reached: dict[str, list[str]] = {}
+        # dict.fromkeys, not a set: one query written twice is one read, and the order the
+        # `queries:` list was authored in is the order to report the models it reaches in.
+        for query in dict.fromkeys(reads.get((kind, name)) or []):
+            model_name = query_model.get(query)
+            if model_name is None or owner.get(model_name) in (None, claimants[0]):
+                continue
+            reached.setdefault(model_name, []).append(query)
+        for model_name, queried in reached.items():
+            rendered = _and_list([f"'{q}'" for q in queried])
+            errors.append(
+                f"{_label(kind, name)} is claimed by topology group '{claimants[0]}' but "
+                f"queries {rendered} over model '{model_name}', whose projections group "
+                f"'{owner[model_name]}' claims — what the log records is the decision and "
+                "never the model, so a reader trailing the fold it reads emits a different "
+                f"event that no refold repairs; it must be claimed by '{owner[model_name]}' "
+                "(rule 6)"
+            )
 
     # Rules 2 and 3. An element partitions when it reads nothing: declaring no queries, it
     # computes its output from the command or event alone, so no concurrent decision can
     # reach it. One that DOES query is a read-modify-write over a model a peer may be
     # changing underneath it, and the feature-file declares no aggregate key to serialise
-    # it by — so that one, and only that one, is what forces a group serial.
-    #
-    # Keyed on the `queries:` list and never on the kind that declares it: rule 2 exonerates
-    # a policy for observing events out of order, which says nothing about the model it
-    # reads, and the generated policy context carries a real `query:` handle. Keyed on the
-    # (kind, name) PAIR because nothing makes names unique across kinds.
-    reads: dict[tuple[str, str], list[str]] = {
-        ("procedure", p.name): list(p.queries or []) for p in feat.procedures or []
-    }
-    reads.update({("policy", y.name): list(y.queries or []) for y in feat.policies or []})
+    # it by — so that one, and only that one, is what forces a group serial. Rule 6 has
+    # already put that reader in the group folding what it reads; this says how many lanes
+    # that group may then run, and it reads the same `reads` map to decide.
     for group in groups:
         count, source = _effective_concurrency(group, topology.defaults)
         # A background lane runs while the main lane runs, so `executor: pool` is a

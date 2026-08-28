@@ -352,7 +352,11 @@ def test_wiring_error_when_topology_invalid(libs: Path, caplog: pytest.LogCaptur
 
 
 def test_wiring_succeeds_with_valid_topology(libs: Path) -> None:
-    """A topology the feat satisfies is read, validated, and generation proceeds."""
+    """A topology the feat satisfies is read, validated, and generation proceeds.
+
+    Rule 6 is what makes this topology the shape it is: both readers query `recipes`,
+    so the group folding `recipes` is the only group either of them may sit in, and the
+    sweeper is left holding nothing but the safety net."""
     (libs / "topology.yaml").write_text(
         textwrap.dedent(
             """
@@ -360,8 +364,7 @@ def test_wiring_succeeds_with_valid_topology(libs: Path) -> None:
               - name: folds
                 include:
                   - model: recipes
-              - name: reactions
-                include:
+                  - kind: procedures
                   - kind: policies
               - name: rest
                 catch_all: true

@@ -205,7 +205,14 @@ ISOLATION_FEAT = {
 
 ISOLATION_TOPOLOGY = {
     "groups": [
-        {"name": "fast", "include": [{"kind": "projections"}, {"kind": "policies"}]},
+        {
+            "name": "fast",
+            "include": [
+                {"kind": "projections"},
+                {"kind": "policies"},
+                {"kind": "procedures", "names": ["approve_run"]},
+            ],
+        },
         {
             "name": "paid",
             "include": [{"kind": "procedures", "names": ["*_completion", "summarize_*"]}],
@@ -248,7 +255,7 @@ def test_the_isolation_topology_pins_an_exact_placement_table(isolation):
     block = _placement_block(render_wiring(feat, "labthing.feat.yaml", topology))
     assert (
         "COMMAND_PLACEMENT: dict[str, tuple[str, str]] = {\n"
-        '    "ApproveRun": ("default", "interactive"),\n'
+        '    "ApproveRun": ("fast", "interactive"),\n'
         '    "RequestCompletion": ("paid", "batch"),\n'
         '    "SendNotification": ("default", "interactive"),\n'
         '    "SummarizeRun": ("paid", "batch"),\n'

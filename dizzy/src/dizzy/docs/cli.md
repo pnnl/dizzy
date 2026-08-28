@@ -160,8 +160,9 @@ element, in-process transport, behaviourally identical to a build with no topolo
 all. Present, it is validated against the feature-file before anything is written, and
 generation fails naming the element and the rule it broke — one model's projections split
 across groups, an element claimed twice or not at all, a selector naming something the
-feat does not declare, a group that cannot be proven safe to run concurrently. The file
-is read only under that exact name; a topology accepted is logged, so a misspelled
+feat does not declare, a group that cannot be proven safe to run concurrently, an
+element deciding on a model another group folds. The file is read only under that
+exact name; a topology accepted is logged, so a misspelled
 filename is visible rather than a silently unenforced placement.
 
 A topology also says how the single machine serves each group. `executor: inline`

@@ -72,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     emits none of it and is byte-identical to before.
   - Placements the feature-file forbids are rejected at generation time. The
     rules are written down in [Deployment topology](docs/explanation/topology.md);
-    rules 1-5 are enforced, rule 6 is specified only.
+    all six are enforced, rule 6 (a reader shares a group with what it reads) as of
+    this change.
   - The rule that decides whether an element may be spread across workers keys on
     whether it declares `queries:` — not on whether it is a procedure or a policy.
     An element that reads a model has a read-modify-write to protect; one that
