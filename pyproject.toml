@@ -52,7 +52,7 @@ mp = [
     "redis>=5",
     # Tracing API only. The SDK, its exporters and their configuration are the
     # host's (HostApp.otel), so a worker can run with tracing switched off.
-    "opentelemetry-api>=1.27",
+    "opentelemetry-api>=1.45.1",
 ]
 # Read models in SQLAlchemy. NOT needed by the engine — it reaches read models
 # only through the runners a wiring registers — so this buys the cache-management
